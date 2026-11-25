@@ -34,22 +34,26 @@ def make_features(prices: pd.DataFrame, bars: BarSpec) -> dict[str, pd.DataFrame
 
 
 def make_target(prices: pd.DataFrame, bars: BarSpec, horizon_months: float = 1,
-                cash: pd.Series | None = None) -> pd.DataFrame:
-    """변동성 조정 미래 초과수익(t→t+h). 마지막 h 바는 NaN(미래 미확정)."""
+                cash: pd.Series | None = None, gap: int = 1) -> pd.DataFrame:
+    """변동성 조정 미래 초과수익 (t+gap → t+gap+h). 마지막 gap+h 바는 NaN(미래 미확정).
+
+    gap=1: 신호 다음 바에 체결하는 실제 매매 시점과 맞춘다. 월평균 가격처럼 인접 수익률에
+    인위적 자기상관이 있는 데이터에서 '거래 불가능한' 예측력을 걸러내는 효과도 있다.
+    """
     p = prices.astype(float)
     h = bars.bars(horizon_months)
-    fwd = np.log(p.shift(-h) / p)
+    fwd = np.log(p.shift(-h - gap) / p.shift(-gap))
     if cash is not None:
-        c = np.log(cash.shift(-h) / cash)
+        c = np.log(cash.shift(-h - gap) / cash.shift(-gap))
         fwd = fwd.sub(c, axis=0)
     lr = np.log(p / p.shift(1))
     vol3 = _vol(lr, bars, 3).clip(lower=1e-4)
     return fwd / (vol3 * np.sqrt(horizon_months / 12))
 
 
-def forward_returns(prices: pd.DataFrame, bars: BarSpec, horizon_months: float = 1) -> pd.DataFrame:
+def forward_returns(prices: pd.DataFrame, bars: BarSpec, horizon_months: float = 1, gap: int = 1) -> pd.DataFrame:
     h = bars.bars(horizon_months)
-    return prices.shift(-h) / prices - 1
+    return prices.shift(-h - gap) / prices.shift(-gap) - 1
 
 
 def to_tensor(features: dict[str, pd.DataFrame], target: pd.DataFrame | None, assets: list[str],

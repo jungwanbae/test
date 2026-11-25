@@ -4,7 +4,9 @@
   * 퍼지(purge): 학습 마지막 타깃이 테스트 구간과 겹치지 않도록 horizon 만큼 비운다
   * 조기종료: 학습 구간의 마지막 20%(시간순)를 검증셋으로
   * 앙상블: 시드 여러 개 평균 → 분산 감소
-  * 게이트: 표본외 순위 IC 평균·t값이 기준 미달이면 ML 을 전략에 반영하지 않는다(blend=0)
+  * 게이트 ①: 표본외 순위 IC 평균 ≥ 0.02, t ≥ 2.0
+  * 게이트 ②(ml/gate.py): 같은 표본외 예측으로 백테스트했을 때 Sharpe 가 개선돼야 함
+    둘 다 통과해야 실거래에 반영된다(blend>0). 하나라도 미달이면 ML 없이 동작
 """
 from __future__ import annotations
 
@@ -37,6 +39,7 @@ def _torch():
 class MLConfig:
     seq_len_months: float = 3
     horizon_months: float = 1
+    target_gap_bars: int = 1          # 체결지연(다음 바 체결)과 일치시키는 타깃 시작 지연
     hidden: int = 32
     heads: int = 4
     dropout: float = 0.2
@@ -51,7 +54,7 @@ class MLConfig:
     min_train_months: int = 60
     sample_stride_days: int = 5       # 일봉에서 표본 간격(중복 완화)
     min_ic: float = 0.02
-    min_ic_tstat: float = 1.5
+    min_ic_tstat: float = 2.0         # ≈ 5% 유의수준. 1.5 는 실데이터에서 성과 개선 없이 통과해 상향
 
 
 @dataclass
@@ -147,9 +150,10 @@ def walk_forward(prices: pd.DataFrame, bars: BarSpec | None = None, cfg: MLConfi
     assets = [c for c in prices.columns if c != cash_col]
     cash = prices[cash_col] if cash_col else None
     feats = make_features(prices[assets], bars)
-    target = make_target(prices[assets], bars, cfg.horizon_months, cash=cash)
-    realized = forward_returns(prices[assets], bars, cfg.horizon_months)
-    L, stride, h = _seq_len(cfg, bars), _stride(cfg, bars), bars.bars(cfg.horizon_months)
+    gap = cfg.target_gap_bars
+    target = make_target(prices[assets], bars, cfg.horizon_months, cash=cash, gap=gap)
+    realized = forward_returns(prices[assets], bars, cfg.horizon_months, gap=gap)
+    L, stride, h = _seq_len(cfg, bars), _stride(cfg, bars), bars.bars(cfg.horizon_months) + gap
     dates = prices.index
     valid_feat = pd.concat([feats[k] for k in FEATURES], axis=1).notna().any(axis=1)
     first_ok = valid_feat[valid_feat].index.min() if valid_feat.any() else None
@@ -200,9 +204,10 @@ def train_final(prices: pd.DataFrame, out_path: str | Path, bars: BarSpec | None
     bars = bars or BarSpec.infer(prices.index)
     assets = [c for c in prices.columns if c != cash_col]
     feats = make_features(prices[assets], bars)
-    target = make_target(prices[assets], bars, cfg.horizon_months, cash=prices[cash_col] if cash_col else None)
+    target = make_target(prices[assets], bars, cfg.horizon_months, cash=prices[cash_col] if cash_col else None,
+                         gap=cfg.target_gap_bars)
     L, stride = _seq_len(cfg, bars), _stride(cfg, bars)
-    h = bars.bars(cfg.horizon_months)
+    h = bars.bars(cfg.horizon_months) + cfg.target_gap_bars
     dates = prices.index[: len(prices.index) - h][::stride]
     X, Y, M = to_tensor(feats, target, assets, L, dates)
     keep = np.isfinite(Y).any(axis=1)

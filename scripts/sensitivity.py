@@ -24,6 +24,18 @@ GRID = {
 }
 
 
+def breakdown_by_topk(df: pd.DataFrame, b6040: dict) -> str:
+    """집중(top_k=1) vs 분산(top_k>=2) 비교 — 취약한 설정이 어디인지 드러낸다."""
+    out = ["## top_k 별 강건성", "", "| top_k | 조합 | 60/40보다 Sharpe 높음 | 60/40보다 MDD 얕음 | Sharpe 최소~최대 | 최악 MDD | CAGR 중앙값 |",
+           "|---|---:|---:|---:|---:|---:|---:|"]
+    groups = [(str(k), g) for k, g in df.groupby("top_k")] + [("2 이상", df[df.top_k >= 2])]
+    for k, g in groups:
+        out.append(f"| {k} | {len(g)} | {(g.sharpe > b6040['sharpe']).mean():.0%} | "
+                   f"{(g.mdd > b6040['max_drawdown']).mean():.0%} | {g.sharpe.min():.2f}~{g.sharpe.max():.2f} | "
+                   f"{g.mdd.min() * 100:.1f}% | {g.cagr.median() * 100:.1f}% |")
+    return "\n".join(out)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="reports/sensitivity.md")
@@ -57,7 +69,7 @@ def main() -> None:
         f = (lambda v: f"{v * 100:.1f}%") if pct else (lambda v: f"{v:.2f}")
         lines.append(f"| {col} | " + " | ".join(f(v) for v in q) + " | " +
                      " | ".join(f(bench[b][key]) for b in ("60/40", "S&P500", "1/3균등")) + " |")
-    lines += ["", "## 요인별 중앙값 Sharpe", ""]
+    lines += ["", breakdown_by_topk(df, b6040), "", "## 요인별 중앙값 Sharpe", ""]
     for g in ("lookbacks", "top_k", "target_vol", "weighting"):
         m = df.groupby(g)[["sharpe", "cagr", "mdd"]].median()
         lines.append(f"**{g}**: " + ", ".join(f"{i} → Sharpe {r.sharpe:.2f} / CAGR {r.cagr * 100:.1f}% / "

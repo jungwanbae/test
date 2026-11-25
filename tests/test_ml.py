@@ -29,7 +29,7 @@ def test_features_do_not_peek(monthly):
 
 def test_target_is_forward_and_last_is_nan(monthly):
     t = make_target(monthly, MONTHLY, horizon_months=1)
-    assert t.iloc[-1].isna().all() and t.iloc[-2].notna().all()
+    assert t.iloc[-2:].isna().all().all() and t.iloc[-3].notna().all()  # gap=1 + h=1
 
 
 def test_model_shapes_and_masking():

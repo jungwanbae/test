@@ -137,7 +137,11 @@ class TradingEngine:
             hh, mm = _hm(self.cfg.execution.deadline)
             if now.time() >= now.replace(hour=hh, minute=mm).time() or now.time() < now.replace(hour=9, minute=0).time():
                 return RunReport("skipped", "주문 가능 시간(09:00~마감) 아님")
-        due, why = self.rebalance_due(today, force=force)
+        try:
+            due, why = self.rebalance_due(today, force=force)
+        except BrokerError as e:
+            self.notifier.send(f"❌ 잔고 조회 실패: {e}")
+            return RunReport("error", f"잔고 조회 실패: {e}")
         if not due:
             return RunReport("skipped", why)
 
@@ -299,7 +303,11 @@ class TradingEngine:
             now = self.clock()
             if now.date() != last_day and (now.hour, now.minute) >= (hh, mm):
                 last_day = now.date()
-                rep = self.run_once(dry_run=dry_run)
+                try:
+                    rep = self.run_once(dry_run=dry_run)
+                except Exception as e:  # 예기치 못한 오류로 데몬이 죽지 않게
+                    log.exception("run_once 예외")
+                    rep = RunReport("error", f"예외: {e}")
                 log.info("실행 결과: %s — %s", rep.status, rep.message)
                 # 부분체결·일시 오류는 같은 날 최대 3회 재시도(10분 간격). 킬스위치·실계좌 미확인은 재시도 안 함
                 if rep.status in ("partial", "error") and "킬스위치" not in rep.message \

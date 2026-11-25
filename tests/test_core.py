@@ -205,3 +205,15 @@ def test_config_rejects_unknown_keys(tmp_path):
     p.write_text("strategy:\n  topk: 3\n")
     with pytest.raises(ValueError):
         load_config(p)
+
+
+def test_ml_portfolio_gate_rejects_noise(trend_prices):
+    from autotrader.ml.gate import portfolio_uplift
+    rng = np.random.default_rng(1)
+    assets = ["UP1", "UP2", "FLAT", "DOWN"]
+    noise = pd.DataFrame(rng.normal(size=(len(trend_prices), 4)), index=trend_prices.index, columns=assets)
+    make = lambda b: _amr(top_k=2, ml_blend=b)  # noqa: E731
+    res = portfolio_uplift(trend_prices, make, noise, 1.0, BacktestConfig())
+    assert set(res) >= {"sharpe_base", "sharpe_ml", "sharpe_uplift", "passed"}
+    oracle = trend_prices[assets].pct_change(21).shift(-22)  # 미래를 아는 예측 → 잡음보다 나빠선 안 됨
+    assert portfolio_uplift(trend_prices, make, oracle, 1.0, BacktestConfig())["sharpe_ml"] >= res["sharpe_ml"] - 1e-9

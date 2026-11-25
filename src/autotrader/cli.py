@@ -109,10 +109,9 @@ def cmd_backtest(args) -> int:
         from autotrader.ml.train import MLConfig, walk_forward
         wf = walk_forward(px[risk + ([cash] if cash else [])], cfg=MLConfig(), cash_col=cash)
         print(f"ML 워크포워드: IC={wf.summary['ic_mean']:.4f} t={wf.summary['ic_tstat']:.2f} "
-              f"→ {'통과' if wf.passed else '미통과(혼합 0)'}")
-        if wf.passed:
-            ml_scores = wf.predictions
-            params.ml_blend = cfg.ml.blend
+              f"→ IC 게이트 {'통과' if wf.passed else '미통과'} (--ml 은 비교용으로 게이트와 무관하게 반영)")
+        ml_scores = wf.predictions
+        params.ml_blend = cfg.ml.blend
     results = {"AMR(전략)": run_backtest(px, AMRStrategy(params), bt, ml_scores=ml_scores)}
     if monthly_avg:
         bench = {"S&P500 보유": FixedWeights({"SPX": 1.0}, "spx"),
@@ -214,17 +213,32 @@ def cmd_status(args) -> int:
 
 
 def cmd_ml_validate(args) -> int:
+    from autotrader.backtest.engine import BacktestConfig
+    from autotrader.ml.gate import portfolio_uplift
     from autotrader.ml.train import MLConfig, train_final, walk_forward
+    from autotrader.strategy.amr import AMRParams, AMRStrategy
     cfg = _cfg(args)
     _setup_logging(None, args.verbose)
     px, risk, cash, _ = _load_prices(args, cfg)
     cols = risk + ([cash] if cash else [])
     mcfg = MLConfig(epochs=args.epochs, seeds=args.seeds)
     wf = walk_forward(px[cols].dropna(how="all"), cfg=mcfg, cash_col=cash)
-    print(json.dumps(wf.summary, ensure_ascii=False, indent=1))
-    if wf.passed or args.save_anyway:
-        p = train_final(px[cols], args.out, cfg=mcfg, cash_col=cash, validation=wf.summary)
-        print(f"모델 저장: {p} (검증 {'통과' if wf.passed else '미통과 — 실거래에는 반영되지 않음'})")
+    s = cfg.strategy
+    top_k = s.top_k if len(risk) > 3 else 2
+
+    def make(blend: float):
+        return AMRStrategy(AMRParams(risk_assets=risk, cash_asset=cash, lookback_months=s.lookback_months,
+                                     top_k=top_k, max_weight=max(s.max_weight, 1.0 / top_k),
+                                     target_vol=s.target_vol, weighting=s.weighting, ml_blend=blend))
+
+    bt = BacktestConfig(execution_lag=1 if args.data == "research_us" else None)
+    gate2 = portfolio_uplift(px[cols], make, wf.predictions, cfg.ml.blend, bt)
+    summary = {**wf.summary, "ic_gate_passed": wf.passed, "portfolio_gate": gate2,
+               "passed": bool(wf.passed and gate2["passed"])}
+    print(json.dumps(summary, ensure_ascii=False, indent=1))
+    if summary["passed"] or args.save_anyway:
+        p = train_final(px[cols], args.out, cfg=mcfg, cash_col=cash, validation=summary)
+        print(f"모델 저장: {p} (검증 {'통과' if summary['passed'] else '미통과 — 실거래에는 반영되지 않음'})")
     else:
         print("검증 미통과 → 모델을 저장하지 않습니다(전략은 ML 없이 동작).")
     return 0
