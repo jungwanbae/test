@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autotrader"
+version = "0.1.0"
+description = "멀티에셋(주식·금·채권·지수ETF) 알고리즘 자동매매 — NH투자증권 나무 PLUG(기본) / 한국투자증권 KIS"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "requests>=2.31",
+    "PyYAML>=6.0",
+    "holidays>=0.40",
+]
+
+[project.optional-dependencies]
+ml = ["torch>=2.1"]
+report = ["matplotlib>=3.7"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+autotrader = "autotrader.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,81 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# autotrader 기본 설정 — 복사해서 config/my.yaml 로 쓰는 것을 권장
+# 비밀값(API 키·계좌)은 여기 쓰지 말고 .env 에 넣으세요.
+# ─────────────────────────────────────────────────────────────────────────────
+
+broker:
+  name: nh_plug            # nh_plug(기본, 최저 수수료) | kis | paper
+  env: mock                # mock(모의투자) → 충분히 검증 후 live
+  nh_brand: namuh          # namuh(나무) | n2
+  nh_rate_limit_per_sec: 4 # NH 한도 초당 5건
+  paper_initial_cash: 10000000
+  paper_quote_source: nh_plug   # paper 모드에서 실시세를 가져올 증권사
+
+# 운용 유니버스: 모두 국내 상장 ETF → 국내주식 계좌 하나로 주식·금·채권·지수 분산
+# (운용사 리브랜딩으로 종목명이 바뀔 수 있어 코드 기준으로 관리. 배당/분배가 큰 ETF 는 가격수익률이
+#  총수익보다 낮게 잡히므로 채권은 분배가 거의 없는 '국채선물' 계열을 선택)
+universe:
+  risk_assets:
+    - {symbol: "069500", name: "KODEX 200",              asset_class: 한국주식}
+    - {symbol: "360750", name: "TIGER 미국S&P500",       asset_class: 미국주식}
+    - {symbol: "133690", name: "TIGER 미국나스닥100",    asset_class: 미국성장주}
+    - {symbol: "411060", name: "ACE KRX금현물",          asset_class: 금}
+    - {symbol: "152380", name: "KODEX 국채선물10년",     asset_class: 한국장기채}
+    - {symbol: "305080", name: "TIGER 미국채10년선물",   asset_class: 미국장기채}
+  cash_asset: {symbol: "459580", name: "KODEX CD금리액티브(합성)", asset_class: 현금성}
+
+strategy:                  # AMR: 적응형 모멘텀 리스크패리티
+  name: amr
+  lookback_months: [3, 6, 12]
+  top_k: 3                 # 6개 중 상위 3개
+  vol_window_months: 3
+  weighting: inverse_vol   # inverse_vol | erc | equal
+  max_weight: 0.40
+  target_vol: 0.10         # 연 10%. 공격적이면 0.14, 보수적이면 0.07 (null = 끔)
+  trend_sma_months: null
+  drawdown_brake: null
+
+ml:                        # 딥러닝 오버레이(순위 보정). 워크포워드 검증 통과 모델만 반영
+  enabled: false
+  model_path: models/ml_overlay.pt
+  blend: 0.3
+  require_validation: true
+
+rebalance:
+  drift_threshold: 0.08    # 월중이라도 비중이 8%p 이상 벗어나면 재조정
+  no_trade_band: 0.01      # 자산의 1% 미만 차이는 매매하지 않음(수수료 절감)
+  min_order_value: 50000
+  history_years: 3
+
+execution:
+  run_time: "09:30"        # KST
+  deadline: "15:00"
+  limit_offset_ticks: 1
+  fill_timeout_sec: 60
+  poll_interval_sec: 5
+  max_rounds: 4
+  final_market_order: true
+
+risk:
+  capital_limit: null      # 예: 20000000 → 이 전략에 2천만원까지만 사용
+  cash_buffer_pct: 0.005
+  max_order_value: 50000000
+  max_turnover_pct: 2.0
+  max_price_deviation: 0.10
+  kill_switch_file: STOP   # 이 파일이 존재하면 즉시 매매 중단
+  require_live_confirm: true
+
+costs:
+  preset: nh_plug          # nh_plug | kis_bankis | kis_standard
+  commission_rate: null    # 본인 계좌 요율로 덮어쓰기(소수, 0.0001 = 0.01%)
+  slippage_bps: 5
+
+storage:
+  db_path: state/autotrader.db
+  cache_dir: data/cache
+  log_dir: logs
+
+notify:
+  telegram: false
+
+extra_holidays: []         # 예: ["2026-06-03"]  임시공휴일·선거일 등
