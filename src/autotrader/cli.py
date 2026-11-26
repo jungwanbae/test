@@ -161,6 +161,9 @@ def cmd_backtest(args) -> int:
 
 def _engine(args, cfg: AppConfig):
     from autotrader.brokers import build_broker
+    if cfg.market == "US":
+        from autotrader.execution.us_engine import USTradingEngine
+        return USTradingEngine(cfg, build_broker(cfg))
     from autotrader.execution.engine import TradingEngine
     return TradingEngine(cfg, build_broker(cfg))
 
@@ -171,10 +174,12 @@ def cmd_account(args) -> int:
     from autotrader.brokers import build_broker
     b = build_broker(cfg)
     a = b.get_account()
-    print(f"[{b.name}/{'live' if b.is_live else 'mock'}] 주문가능현금 {a.cash:,.0f}원 · 총자산 {a.total_equity or 0:,.0f}원")
+    us = cfg.market == "US"
+    f = (lambda v: f"${v:,.2f}") if us else (lambda v: f"{v:,.0f}원")
+    print(f"[{b.name}/{'live' if b.is_live else 'mock'}] 주문가능현금 {f(a.cash)} · 총자산 {f(a.total_equity or 0)}")
     for p in a.positions.values():
-        print(f"  {p.symbol} {p.name:<20} {p.qty:>8,}주  평단 {p.avg_price:>10,.0f}  현재 {p.last_price:>10,.0f}  "
-              f"평가 {p.market_value:>14,.0f}")
+        print(f"  {p.symbol} {p.name:<20} {p.qty:>8,}주  평단 {f(p.avg_price):>12}  현재 {f(p.last_price):>12}  "
+              f"평가 {f(p.market_value):>16}")
     return 0
 
 
@@ -182,8 +187,12 @@ def cmd_signal(args) -> int:
     cfg = _cfg(args)
     _setup_logging(cfg, args.verbose)
     eng = _engine(args, cfg)
-    w, diag = eng.compute_targets(date.today())
+    w, diag = eng.compute_targets(eng.clock().date())
     print(f"신호 기준일: {diag.get('signal_date')}  전략: {cfg.strategy.name}")
+    if "triad_us" in diag:
+        t = diag["triad_us"]
+        print(f"  나스닥 21일 변동성 {t['qqq_vol21']:.1%} · 2년 최대낙폭 {t['qqq_dd_2y']:.1%} · 골든크로스 {t['golden_cross']} "
+              f"· VT 노출 {t['vt_exposure']:.2f}배{' (폭락 후 회복 부스트)' if t['boost_on'] else ''}")
     for s, v in w.sort_values(ascending=False).items():
         nm = eng.names.get(s, cfg.universe.name_of(s))
         print(f"  {s} {nm:<24} {v * 100:6.2f}%")
@@ -204,6 +213,37 @@ def cmd_daemon(args) -> int:
     cfg = _cfg(args)
     _setup_logging(cfg, args.verbose)
     _engine(args, cfg).run_daemon(dry_run=args.dry_run)
+    return 0
+
+
+def cmd_triad(args) -> int:
+    """TRIAD 레그 간 자본 배분 점검: 국내 레그(원화) vs 미국 레그(달러×환율) → 목표 비율과 환전 권고액."""
+    from autotrader.brokers import build_broker
+    from autotrader.config import load_config
+    kr_cfg, us_cfg = load_config(args.kr_config), load_config(args.us_config)
+    _setup_logging(kr_cfg, args.verbose)
+    kb, ub = build_broker(kr_cfg), build_broker(us_cfg)
+    ka, ua = kb.get_account(), ub.get_account()
+    kr_syms = set(kr_cfg.universe.all_symbols())
+    kr_val = ka.cash + sum(p.market_value for s, p in ka.positions.items()
+                           if s in kr_syms or kr_cfg.universe.kind_of(s) == "stock")
+    us_syms = set(us_cfg.universe.all_symbols())
+    us_usd = ua.cash + sum(p.market_value for s, p in ua.positions.items() if s in us_syms)
+    fx = ub.fx_rate() if hasattr(ub, "fx_rate") else None
+    if not fx:
+        print("환율을 가져오지 못했습니다(시세는 운영 키 필요)")
+        return 1
+    us_val = us_usd * fx
+    tot = kr_val + us_val
+    share = kr_val / tot if tot else 0.0
+    print(f"국내 레그(MSAP-M) {kr_val:,.0f}원 · 미국 레그(VT+RP) ${us_usd:,.0f} × {fx:,.1f} = {us_val:,.0f}원")
+    print(f"현재 국내 비중 {share:.1%} / 목표 {args.kr_share:.1%} (허용 ±{args.band:.0%}p)")
+    gap = (share - args.kr_share) * tot
+    if abs(share - args.kr_share) > args.band:
+        side = "원화 → 달러 환전 후 미국 레그로" if gap > 0 else "달러 → 원화 환전 후 국내 레그로"
+        print(f"➡ 재배분 권고: 약 {abs(gap):,.0f}원을 {side} 옮기세요(환전은 수동·영업시간 내)")
+    else:
+        print("재배분 불필요")
     return 0
 
 
@@ -343,6 +383,13 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("daemon", help="스케줄러")
     d.add_argument("--dry-run", action="store_true")
     d.set_defaults(func=cmd_daemon)
+
+    t = sub.add_parser("triad", help="TRIAD 국내·미국 레그 자본 배분 점검")
+    t.add_argument("--kr-config", default="config/default.yaml")
+    t.add_argument("--us-config", default="config/triad_us.yaml")
+    t.add_argument("--kr-share", type=float, default=1 / 3)
+    t.add_argument("--band", type=float, default=0.10)
+    t.set_defaults(func=cmd_triad)
 
     s = sub.add_parser("status", help="최근 실행 이력")
     s.add_argument("-n", type=int, default=10)

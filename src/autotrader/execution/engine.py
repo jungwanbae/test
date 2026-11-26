@@ -230,6 +230,13 @@ class TradingEngine:
         return scores, {"ml": "반영", "ml_ic": val.get("ic_mean")}, blend
 
     # ------------------------------------------------------------------ 실행
+    market_open = "09:00"   # 주문을 내기 시작하는 시각(엔진 시계 기준). 미국 레그는 09:35 ET
+
+    def _in_trading_window(self, now: datetime) -> bool:
+        oh, om = _hm(self.market_open)
+        hh, mm = _hm(self.cfg.execution.deadline)
+        return now.replace(hour=oh, minute=om).time() <= now.time() < now.replace(hour=hh, minute=mm).time()
+
     def run_once(self, *, force: bool = False, dry_run: bool = False) -> RunReport:
         now = self.clock()
         today = now.date()
@@ -241,10 +248,8 @@ class TradingEngine:
             return RunReport("error", str(e))
         if not force and not self.calendar.is_trading_day(today):
             return RunReport("skipped", f"{today} 휴장일")
-        if not dry_run:
-            hh, mm = _hm(self.cfg.execution.deadline)
-            if now.time() >= now.replace(hour=hh, minute=mm).time() or now.time() < now.replace(hour=9, minute=0).time():
-                return RunReport("skipped", "주문 가능 시간(09:00~마감) 아님")
+        if not dry_run and not self._in_trading_window(now):
+            return RunReport("skipped", f"주문 가능 시간({self.market_open}~{self.cfg.execution.deadline}) 아님")
         stop_note = ""
         if self.cfg.strategy.name == "msap" and self.cfg.msap.stock.stop_loss:
             try:

@@ -36,6 +36,9 @@ PRESETS: dict[str, FeeSchedule] = {
     # 유관기관 제비용 포함 여부는 공식 수수료표 확인 필요 → 보수적으로 별도 가산.
     "nh_plug": FeeSchedule("NH투자증권 나무 PLUG(API)", 0.0001,
                            note="국내 0.01%·해외 0.09%(API 전용). 신청 후 12개월 우대 이벤트. 제비용 별도 가정"),
+    # 미국 레그(NH PLUG 해외주식 API 0.09%). 미국 매도 시 SEC fee(약 0.003%)는 소액이라 수수료에 흡수해 가정
+    "nh_plug_us": FeeSchedule("NH투자증권 나무 PLUG 해외(API)", 0.0009, exchange_fee_rate=0.00003,
+                              stock_sell_tax_rate=0.0, note="해외 0.09%(API 전용) + SEC fee 근사. 환전 스프레드 별도"),
     # 한국투자증권 KIS: API 수수료 = 해당 계좌의 HTS/온라인 수수료(별도 API 이용료 없음).
     "kis_bankis": FeeSchedule("한국투자증권 뱅키스(API=온라인 동일)", 0.000140527, exchange_fee_rate=0.0,
                               note="뱅키스 계좌 우대요율(제비용 포함, 확인 필요). 일반 온라인 0.147%"),

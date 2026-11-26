@@ -7,11 +7,13 @@ from autotrader.fees import get_fee_schedule
 
 
 def _nh(cfg: AppConfig, env_name: str):
-    from autotrader.brokers.nh_plug import NHPlugBroker
-    return NHPlugBroker(env("NHPLUG_APP_KEY"), env("NHPLUG_APP_SECRET"), env=env_name,
-                        account=env("NHPLUG_ACCOUNT") or None, brand=cfg.broker.nh_brand,
-                        rate_limit_per_sec=cfg.broker.nh_rate_limit_per_sec,
-                        token_cache_dir=cfg.broker.token_cache_dir)
+    if cfg.market == "US":   # 미국 레그: 같은 NH 계좌의 해외주식(달러) 부분
+        from autotrader.brokers.nh_plug_overseas import NHPlugOverseasBroker as cls
+    else:
+        from autotrader.brokers.nh_plug import NHPlugBroker as cls
+    return cls(env("NHPLUG_APP_KEY"), env("NHPLUG_APP_SECRET"), env=env_name,
+               account=env("NHPLUG_ACCOUNT") or None, brand=cfg.broker.nh_brand,
+               rate_limit_per_sec=cfg.broker.nh_rate_limit_per_sec, token_cache_dir=cfg.broker.token_cache_dir)
 
 
 def _kis(cfg: AppConfig, env_name: str):
@@ -25,6 +27,8 @@ def build_broker(cfg: AppConfig, quote_broker: Broker | None = None) -> Broker:
     if name == "nh_plug":
         return _nh(cfg, cfg.broker.env)
     if name == "kis":
+        if cfg.market == "US":
+            raise BrokerError("미국 레그는 현재 NH PLUG 해외주식만 지원합니다(broker.name: nh_plug)", category="config")
         return _kis(cfg, cfg.broker.env)
     if name == "paper":
         from autotrader.brokers.paper import PaperBroker

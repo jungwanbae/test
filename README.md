@@ -1,4 +1,24 @@
-# autotrader — 멀티 슬리브 퀀트 자동매매 (NH투자증권 나무 PLUG)
+# autotrader — 멀티 엔진 퀀트 자동매매 (NH투자증권 나무 PLUG, 국내 + 미국)
+
+## ★ 최종 권장 전략: TRIAD (전설적 전략 31개 토너먼트에서 도출)
+
+| 원화 기준·일별 MDD·실비용, 2005 ~ 2026.11 | CAGR | 세후(근사) | Sharpe | 일별 MDD | 2016~ | 최악의 해 |
+|---|---:|---:|---:|---:|---:|---:|
+| **TRIAD = 한국 MSAP-M ⅓ + 미국 확인형 역발상 VT ⅓ + 미국 레버리지 RP ⅓** | **21.7%** | **18.5%** | **1.19** | **−26.2%** | **20.4%** | −12.9% |
+| 기존 알림 전략 3개(고금리 대비형·3차 공격형·AQUILA-X 근사) 1/3씩 | 22.0% | 17.3% | 0.93 | −36.1% | 22.5% | −18.6% |
+| 나스닥100 보유 | 15.8% | 11.8% | 0.75 | −30.6% | 19.7% | −28.5% |
+| 무조건 역발상 레버리지(낙폭 −20/−30/−40% → 1.5/2/3배) | 18.8% | 12.9% | 0.60 | **−90.8%** | 23.2% | −84.3% |
+
+- 2001~(닷컴 붕괴 포함) 전체 CAGR 20.9%, MDD −26.2%. 6,600여 개 시험을 보정한 Deflated Sharpe 0.95.
+- **역발상 레버리지에 대한 결론**: 폭락 '도중' 레버리지를 늘리는 방식은 2001년 시작 시 MDD −99.6%, 1971년 이후 S&P500 으로도 −86% 로
+  파산형입니다. 대신 **'깊은 낙폭 + 추세 회복 확인(골든크로스)' 후에 1년간 3배**로 싣는 확인형 역발상은 45개 설정 모두에서 유효했고,
+  TRIAD 의 한 엔진으로 넣었습니다.
+- 상세·근거: [`reports/tournament_report.md`](reports/tournament_report.md) · 운용: 국내 레그 `config/default.yaml`, 미국 레그 `config/triad_us.yaml`
+- ⚠️ 2026-11-24 현재 TRIAD 는 고점 대비 −22% 낙폭 중입니다. 과거 최대낙폭을 넘을 수 있다는 전제로 비중을 정하세요.
+
+---
+
+### 국내 레그: MSAP-M
 
 **MSAP-M**: 머신러닝 종목 알파 + 원화 기준 멀티에셋 리스크패리티 + **마크 미너비니식 손실 제한 규율**을 결합해
 **신호 → 증권사 API 자동 주문**까지 처리하는 파이썬 시스템입니다. 리밸런싱은 월 1회, 손절 점검은 매일 합니다.
@@ -156,6 +176,17 @@ autotrader sepa-scan           # 미너비니 트렌드템플릿·VCP 스크리�
 - **위험 성향 조절**: `msap.stock_weight` 0.5(균형) / 0.7(기본) / 0.8(공격), `msap.stock.stop_loss` 0.15(기본) / null(손절 없음, 수익 극대화형).
 - 실계좌 전환: `broker.env: live` + `.env` 에 `AUTOTRADER_LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`
 
+**TRIAD 미국 레그**(같은 NH 계좌의 해외주식, 달러로 환전해 둔 금액만 사용 · 시간은 미국 동부시간):
+```bash
+autotrader --config config/triad_us.yaml account     # 달러 잔고
+autotrader --config config/triad_us.yaml signal      # 목표비중 + 나스닥 변동성·낙폭·골든크로스·부스트 상태
+autotrader --config config/triad_us.yaml rebalance --dry-run --force
+autotrader --config config/triad_us.yaml daemon      # 매 미국 거래일 10:30 ET(월말 신호·사건 신호·비중 이탈 시 매매)
+autotrader triad                                     # 국내 ⅓ : 미국 ⅔ 배분 점검 → ±10%p 벗어나면 환전 금액 안내
+```
+- 매매 상품: QQQ·TQQQ·TLT·TMF·GLD·UGL·DBC·SGOV. 해외 레버리지 ETP 매매 요건(사전교육·기본예탁금 등)을 계좌에서 먼저 확인하세요.
+- 신호는 백테스트 함수(`research/tournament.py`)를 그대로 호출합니다(과거 40개월 신호 일치 확인).
+
 ```cron
 30 9 * * 1-5  cd /opt/autotrader && .venv/bin/autotrader rebalance >> logs/cron.log 2>&1
 0 10 1-7 * 6  cd /opt/autotrader && .venv/bin/autotrader stock-data && .venv/bin/autotrader stock-train
@@ -166,6 +197,9 @@ autotrader sepa-scan           # 미너비니 트렌드템플릿·VCP 스크리�
 autotrader stock-data
 python scripts/stock_scores.py linear lgbm mlp xsformer   # 워크포워드 표본외 점수(딥러닝 포함, 수십 분)
 python scripts/msap_research.py                           # reports/strategy_report.md + 차트
+python scripts/tournament.py                              # 전설적 전략 31개 토너먼트(미국 데이터: data/us)
+python scripts/tournament_analysis.py                     # 상관·위기·1971~ 꼬리위험·민감도·조합
+python scripts/tournament_report.py                       # reports/tournament_report.md
 pytest -q
 ```
 
@@ -188,10 +222,11 @@ src/autotrader/
 ├── equity/      panel.py(KRX 패널) · factors.py(26+5 피처) · models.py(릿지·LightGBM·MLP·Transformer)
 │                sepa.py(미너비니 SEPA-K) · combine.py(슬리브 결합·일별 MDD)
 │                backtest.py(일별 시뮬레이터) · evaluate.py(IS/OOS·DSR) · live.py(실거래 종목 선정)
-├── strategy/    multi_sleeve.py(MSAP) · risk_parity.py(ERC) · amr.py(1차 ETF 모멘텀) · signals.py
+├── strategy/    triad.py(TRIAD 미국 레그) · multi_sleeve.py(MSAP) · risk_parity.py(ERC) · amr.py · signals.py
+├── research/    data.py(원화 일별 멀티에셋·레버리지 합성) · tournament.py(전설적 전략 31개·확인형 역발상)
 ├── data/        krw_assets.py(원화 멀티에셋) · research.py · loader.py
-├── brokers/     nh_plug.py(기본) · kis.py · paper.py
-├── execution/   engine.py(실행·스케줄러) · state.py(SQLite)
+├── brokers/     nh_plug.py(국내) · nh_plug_overseas.py(해외/미국) · kis.py · paper.py
+├── execution/   engine.py(실행·스케줄러) · us_engine.py(미국 레그, NYSE 달력·ET) · state.py(SQLite)
 ├── portfolio/   rebalancer.py · risk.py
 └── ml/          ETF 오버레이용 딥러닝(1차 버전, 검증 게이트 미통과로 기본 꺼짐)
 ```

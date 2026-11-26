@@ -45,7 +45,7 @@ class UniverseConfig:
 
 @dataclass
 class StrategyConfig:
-    name: str = "msap"                  # msap(멀티 슬리브, 기본) | amr(ETF 모멘텀만)
+    name: str = "msap"                  # msap(멀티 슬리브, 기본) | amr(ETF 모멘텀만) | triad_us(TRIAD 미국 레그)
     lookback_months: list[float] = field(default_factory=lambda: [3, 6, 12])
     lookback_weights: list[float] | None = None
     top_k: int = 3
@@ -81,6 +81,29 @@ class MSAPSettings:
     rp_target_vol: float = 0.10
     rp_vol_window_months: float = 12
     rp_max_leverage: float = 1.0
+
+
+@dataclass
+class TriadUSSettings:
+    """TRIAD 미국 레그: 확인형 역발상 변동성 타기팅(나스닥) + 레버리지 리스크패리티(주식·장기채·금·원자재).
+
+    research 모듈의 백테스트 함수(recovery_boost, lev_risk_parity)를 그대로 호출해 실전·백테스트 로직을 일치시킨다.
+    tickers: 연구용 이름 → 미국 상장 ETF. 레버리지 상품은 일일 리셋형(TQQQ 3배·TMF 3배·UGL 2배).
+    distribution_yield: 증권사 일봉은 분배금 미반영 가격이라, 추세(12개월 수익 > 현금) 판정용으로 연 분배율을
+                        매끈하게 더해 총수익을 근사한다.
+    """
+    vt_weight: float = 0.5                 # 미국 레그 안에서 확인형 역발상 VT 비중(나머지 = 레버리지 RP)
+    vt_target: float = 0.25                # 나스닥 목표변동성(연)
+    crash: float = -0.30                   # '깊은 낙폭' 기준: 최근 2년 안에 사상 최고가 대비 −30% 이하였던 적
+    boost_leverage: float = 3.0            # 폭락 후 골든크로스(50>200일선) 확인 시 노출
+    boost_days: int = 252                  # 부스트 유지 거래일(골든크로스가 깨지면 즉시 종료)
+    lrp_target: float = 0.18               # 레버리지 RP 목표변동성
+    cash_rate: float = 0.040               # 미국 단기금리(연) — 추세 필터 기준. 연준 금리 변화 시 갱신
+    tickers: dict[str, str] = field(default_factory=lambda: {
+        "QQQ": "QQQ", "QQQx3": "TQQQ", "TLT": "TLT", "TLTx3": "TMF", "GLD": "GLD", "GLDx2": "UGL",
+        "DBC": "DBC", "CASH_USD": "SGOV"})
+    distribution_yield: dict[str, float] = field(default_factory=lambda: {
+        "QQQ": 0.006, "TLT": 0.040, "GLD": 0.0, "DBC": 0.030})
 
 
 @dataclass
@@ -157,10 +180,12 @@ class NotifyConfig:
 
 @dataclass
 class AppConfig:
+    market: str = "KRX"                   # KRX(국내 레그, 원화) | US(미국 레그, 달러 — NH 해외주식)
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     msap: MSAPSettings = field(default_factory=MSAPSettings)
+    triad_us: TriadUSSettings = field(default_factory=TriadUSSettings)
     ml: MLSettings = field(default_factory=MLSettings)
     rebalance: RebalanceConfig = field(default_factory=RebalanceConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
