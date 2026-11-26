@@ -14,11 +14,14 @@ dependencies = [
     "requests>=2.31",
     "PyYAML>=6.0",
     "holidays>=0.40",
+    "pyarrow>=14",
+    "lightgbm>=4.0",
 ]
 
 [project.optional-dependencies]
 ml = ["torch>=2.1"]
 report = ["matplotlib>=3.7"]
+research = ["skfolio>=0.5", "matplotlib>=3.7"]
 dev = ["pytest>=7"]
 
 [project.scripts]

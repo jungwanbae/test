@@ -42,8 +42,11 @@ def num(x):
     return "-" if x is None or pd.isna(x) else f"{x:.2f}"
 
 
+END = None  # 모든 시계열을 같은 종료일로 맞춘다(ETF 슬리브 데이터 마지막 달)
+
+
 def row(name, e, start="2001"):
-    a, b, c = stats(e, start, "2012"), stats(e, "2013"), stats(e, start)
+    a, b, c = stats(e, start, "2012"), stats(e, "2013", END), stats(e, start, END)
     return (f"| {name} | {pct(c.get('CAGR'))} | {num(c.get('Sharpe'))} | {pct(c.get('MDD'))} | {pct(c.get('WorstY'))} | "
             f"{pct(a.get('CAGR'))} | {num(a.get('Sharpe'))} | {pct(b.get('CAGR'))} | {num(b.get('Sharpe'))} | {pct(b.get('MDD'))} |")
 
@@ -107,6 +110,11 @@ def main() -> None:
     # ---------------- 4. 비중 프런티어 + 최종
     frontier = {w: mix(curves[best], w) for w in (0.5, 0.6, 0.7, 0.8, 1.0)}
     final = frontier[STOCK_W]
+    global END
+    END = str(final.index[-1].date())
+    tail = curves[best].loc[END:]
+    tail_note = (f"종목 알파 슬리브는 {END} 이후 {tail.index[-1].date()} 까지 {tail.iloc[-1] / tail.iloc[0] - 1:+.1%} "
+                 f"(표에는 미포함, 공통 종료일 {END} 기준)")
     final_dl = mix(curves["ens_dl"], STOCK_W) if "ens_dl" in curves else None
 
     # ---------------- 5. 비용 스트레스
@@ -124,7 +132,7 @@ def main() -> None:
             t = pd.read_csv(f, index_col=0)
             col = "ALL_Sharpe" if "ALL_Sharpe" in t else "ALL_Sh"
             trial_sh += list(t[col].dropna().values)
-    n_trials = max(len(trial_sh) + len(scores) * 2, 10)
+    n_trials = max(len(trial_sh) + len(scores) * 2, 300)  # 기록되지 않은 탐색까지 감안해 보수적으로
     dsr = deflated_sharpe(final.pct_change().dropna(), n_trials, float(np.std(trial_sh)) if trial_sh else 0.3)
 
     # ---------------- 7. 차트
@@ -168,7 +176,8 @@ def main() -> None:
     L += [row("종목 알파 단독(" + LABEL[best] + ")", curves[best]), row("ETF 리스크패리티 단독", rp),
           row("KOSPI(시총가중, 배당 제외)", kospi), row("S&P500 보유(원화)", spx), row("4자산 균등(원화)", ew4), "",
           f"- Deflated Sharpe Ratio: **{dsr['dsr']:.3f}** (시험한 설정 {dsr['n_trials']}개 보정, 기준 Sharpe "
-          f"{dsr['sr0_annual']:.2f}) → 1에 가까울수록 '운 좋은 최댓값'이 아닐 확률이 높다", "",
+          f"{dsr['sr0_annual']:.2f}) → 1에 가까울수록 '운 좋은 최댓값'이 아닐 확률이 높다",
+          f"- 기간: 2001-01 ~ {END} (모든 행 동일). {tail_note}", "",
           "## 2. 종목 알파 모델 비교 (상위 15종목·동일가중·월 리밸런싱, 표본외 점수)", "", HEAD]
     for sc in scores:
         L.append(row(f"{LABEL.get(sc, sc)} (회전율 {turns[sc]:.1f}배/년)", curves[sc]))
@@ -179,9 +188,10 @@ def main() -> None:
     L += ["", "## 4. 비용 스트레스 테스트 (MSAP 최종)", "", HEAD]
     for k, e in stress.items():
         L.append(row(k, e))
-    L += ["", "## 5. 연도별 수익률", "", "| 연도 | MSAP | 종목 알파 | ETF RP | KOSPI |", "|---|---:|---:|---:|---:|"]
+    L += ["", f"## 5. 연도별 수익률 (2026년은 {END} 까지)", "", "| 연도 | MSAP | 종목 알파 | ETF RP | KOSPI |",
+          "|---|---:|---:|---:|---:|"]
     ys = {k: v.resample("YE").last().pct_change() for k, v in
-          {"a": final, "b": curves[best], "c": rp, "d": kospi}.items()}
+          {"a": final, "b": curves[best].loc[:END], "c": rp.loc[:END], "d": kospi.loc[:END]}.items()}
     for y in range(2002, 2027):
         cells = []
         for k in "abcd":
