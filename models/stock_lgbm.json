@@ -35,5 +35,10 @@
  "train_rows": 925065,
  "train_start": "1996-06-01",
  "train_end": "2026-10-23",
- "trained_on": "2026-11-26"
+ "trained_on": "2026-11-26",
+ "members": [
+  "stock_lgbm.txt",
+  "stock_lgbm.s8.txt",
+  "stock_lgbm.s9.txt"
+ ]
 }

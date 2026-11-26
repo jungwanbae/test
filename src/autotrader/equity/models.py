@@ -31,6 +31,7 @@ class WFConfig:
     min_train_years: int = 4
     seed: int = 7
     train_window_years: float | None = None   # None=확장 윈도(전체 과거), 숫자=최근 N년만(국면 변화 적응)
+    weight_scheme: str | None = None          # decayN(반감기 N년 최근 가중) | similar(현재와 비슷한 시장국면 가중) — LightGBM
 
 
 def _folds(dates: pd.Series, cfg: WFConfig):
@@ -61,10 +62,11 @@ def _fit_linear(tr: pd.DataFrame):
 def _fit_lgbm(tr: pd.DataFrame, seed: int):
     import lightgbm as lgb
     X, y = _xy(tr)
+    w = tr["_w"].to_numpy(np.float64) if "_w" in tr else None
     model = lgb.LGBMRegressor(n_estimators=400, learning_rate=0.03, num_leaves=31, min_child_samples=300,
                               subsample=0.7, subsample_freq=1, colsample_bytree=0.7, reg_lambda=5.0,
                               random_state=seed, n_jobs=4, verbose=-1)
-    model.fit(X, y)
+    model.fit(X, y, sample_weight=w)
     return lambda te: model.predict(_xy(te)[0])
 
 
@@ -226,6 +228,13 @@ def walk_forward_scores(ds: pd.DataFrame, model: str, cfg: WFConfig | None = Non
         te = ds[(ds["date"] >= test_lo) & (ds["date"] < test_hi)]
         if len(te) == 0 or tr["date"].nunique() < 50:
             continue
+        if cfg.weight_scheme:
+            from autotrader.equity.factors import MARKET_FEATURES
+            from autotrader.research.adaptive import scheme_weights
+            st = tr[MARKET_FEATURES].to_numpy(np.float64)
+            now = te[MARKET_FEATURES].iloc[0].to_numpy(np.float64)
+            w = scheme_weights(cfg.weight_scheme, pd.DatetimeIndex(tr["date"]), test_lo, st, now)
+            tr = tr.assign(_w=w)[w > 1e-6]
         predict = fit(tr, cfg.seed + k)
         scores.loc[te.index] = np.asarray(predict(te), dtype=np.float64)
         log.info("%s fold %s: train %d행(~%s) → test %s", model, test_lo.year, len(tr), train_hi.date(), len(te))

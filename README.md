@@ -15,6 +15,11 @@
   TRIAD 의 한 엔진으로 넣었습니다.
 - 상세·근거: [`reports/tournament_report.md`](reports/tournament_report.md) · 운용: 국내 레그 `config/default.yaml`, 미국 레그 `config/triad_us.yaml`
 - ⚠️ 2026-11-24 현재 TRIAD 는 고점 대비 −22% 낙폭 중입니다. 과거 최대낙폭을 넘을 수 있다는 전제로 비중을 정하세요.
+- **후속 검증**([`reports/adaptive_report.md`](reports/adaptive_report.md)): ① 기존 3전략과 합쳐 최적화 → 위험만 커짐(매년 재최적화도
+  TRIAD 미달) ② 확인형 역발상 엔진은 평소 나스닥 1~3배(평균 현금 4%) ③ 시대 적응형 딥러닝(최근 가중·유사 국면 가중·시기 섞기,
+  LightGBM·MLP·차트 CNN)은 큰 하락을 예측하지 못했고(AUC≈0.50) 규칙 대비 통계적 개선이 없어 채택하지 않음.
+  대신 종목 모델 **시드 잡음**(같은 설정에서 CAGR 17~20%)을 발견해 실전 모델을 **시드 3개 앙상블**로 바꿨고,
+  이를 반영한 TRIAD 기대치는 2001~ 기준 **약 20.5%**(Sharpe 1.16, MDD −25%)입니다.
 
 ---
 

@@ -54,31 +54,46 @@ def latest_rows(panel, cfg: StockSleeveConfig, as_of: pd.Timestamp | None = None
                          min_price=cfg.min_price, universe_by="marcap")
 
 
-def train_final(ds: pd.DataFrame, path: str | Path, seed: int = 7) -> Path:
-    """전체 이력으로 최종 LightGBM 학습(실거래용). 메타정보를 .json 으로 함께 저장."""
+def train_final(ds: pd.DataFrame, path: str | Path, seed: int = 7, seeds: tuple[int, ...] | None = (7, 8, 9)) -> Path:
+    """전체 이력으로 최종 LightGBM 학습(실거래용). 메타정보를 .json 으로 함께 저장.
+
+    seeds: 여러 난수로 학습해 순위를 평균(시드 앙상블). 같은 설정이라도 난수에 따라 상위 15종목이 달라져
+    백테스트 CAGR 이 17~20% 로 흔들렸다(reports/adaptive_report.md 3-5) → 평균으로 '운 좋은 한 번'에 기대지 않는다.
+    """
     import lightgbm as lgb
     lab = ds.dropna(subset=["target"])
     X, y = _xy(lab)
-    model = lgb.LGBMRegressor(n_estimators=400, learning_rate=0.03, num_leaves=31, min_child_samples=300,
-                              subsample=0.7, subsample_freq=1, colsample_bytree=0.7, reg_lambda=5.0,
-                              random_state=seed, n_jobs=4, verbose=-1)
-    model.fit(X, y)
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    model.booster_.save_model(str(out))
+    members = []
+    for k, sd in enumerate(seeds or (seed,)):
+        model = lgb.LGBMRegressor(n_estimators=400, learning_rate=0.03, num_leaves=31, min_child_samples=300,
+                                  subsample=0.7, subsample_freq=1, colsample_bytree=0.7, reg_lambda=5.0,
+                                  random_state=sd, n_jobs=4, verbose=-1)
+        model.fit(X, y)
+        f = out if k == 0 else out.with_name(f"{out.stem}.s{sd}{out.suffix}")
+        model.booster_.save_model(str(f))
+        members.append(f.name)
     out.with_suffix(".json").write_text(json.dumps({
         "features": FEATURES, "train_rows": int(len(lab)), "train_start": str(lab["date"].min().date()),
-        "train_end": str(lab["date"].max().date()), "trained_on": date.today().isoformat()}, ensure_ascii=False, indent=1))
+        "train_end": str(lab["date"].max().date()), "trained_on": date.today().isoformat(),
+        "members": members}, ensure_ascii=False, indent=1))
     return out
 
 
 def score_rows(rows: pd.DataFrame, model_path: str | Path) -> pd.Series:
+    """한 신호일의 종목 점수. 시드 앙상블이면 구성 모델의 순위(0~1)를 평균한다."""
     import lightgbm as lgb
-    meta = json.loads(Path(model_path).with_suffix(".json").read_text())
+    path = Path(model_path)
+    meta = json.loads(path.with_suffix(".json").read_text())
     if meta.get("features") != FEATURES:
         raise ValueError("모델 피처 목록이 현재 코드와 다릅니다 → autotrader stock-train 으로 재학습하세요")
-    booster = lgb.Booster(model_file=str(model_path))
-    return pd.Series(booster.predict(_xy(rows)[0]), index=rows["code"].values)
+    X = _xy(rows)[0]
+    files = [path.with_name(m) for m in meta.get("members") or [path.name]]
+    preds = [pd.Series(lgb.Booster(model_file=str(f)).predict(X), index=rows["code"].values) for f in files]
+    if len(preds) == 1:
+        return preds[0]
+    return sum(p.rank(pct=True) for p in preds) / len(preds)
 
 
 def select(scores: pd.Series, held: list[str], cfg: StockSleeveConfig) -> pd.Series:
