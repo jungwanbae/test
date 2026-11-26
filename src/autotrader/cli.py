@@ -8,6 +8,8 @@
   autotrader rebalance --dry-run          주문계획만 출력
   autotrader rebalance                    1회 리밸런싱 실행
   autotrader daemon                       매 거래일 정해진 시각에 자동 실행
+  autotrader stock-data                   KRX 전종목 일별 데이터(1995~) 동기화 + 피처 데이터셋
+  autotrader stock-train                  종목 알파 모델(LightGBM) 학습 → models/stock_lgbm.txt
   autotrader ml-validate --data ...       딥러닝 오버레이 워크포워드 검증(+통과 시 모델 저장)
   autotrader status                       최근 실행 이력
 """
@@ -180,9 +182,10 @@ def cmd_signal(args) -> int:
     _setup_logging(cfg, args.verbose)
     eng = _engine(args, cfg)
     w, diag = eng.compute_targets(date.today())
-    print(f"신호 기준일: {diag.get('signal_date')}  (후보 {diag.get('candidates')}, 축소배율 {diag.get('scale')})")
-    for s, v in w.items():
-        print(f"  {cfg.universe.name_of(s):<26} {v * 100:6.2f}%   모멘텀 {diag.get('momentum', {}).get(s, float('nan')):+.3f}")
+    print(f"신호 기준일: {diag.get('signal_date')}  전략: {cfg.strategy.name}")
+    for s, v in w.sort_values(ascending=False).items():
+        nm = eng.names.get(s, cfg.universe.name_of(s))
+        print(f"  {s} {nm:<24} {v * 100:6.2f}%")
     return 0
 
 
@@ -244,6 +247,35 @@ def cmd_ml_validate(args) -> int:
     return 0
 
 
+def cmd_stock_data(args) -> int:
+    """KRX 전종목 데이터(marcap) 동기화 → 패널 → 학습용 주간 데이터셋."""
+    from autotrader.equity.live import StockSleeveConfig, build_training_dataset, sync_marcap
+    from autotrader.equity.panel import build_panel, save_panel
+    cfg = _cfg(args)
+    _setup_logging(None, args.verbose)
+    st = cfg.msap.stock
+    data_dir = sync_marcap(st.marcap_dir)
+    panel = build_panel(data_dir)
+    save_panel(panel, args.out)
+    sc = StockSleeveConfig(universe_size=st.universe_size, min_amount=st.min_amount, min_price=st.min_price)
+    ds = build_training_dataset(panel, sc)
+    ds.to_parquet(f"{args.out}/dataset_cap.parquet")
+    print(f"패널 {panel.ret.shape} ({panel.dates[0].date()}~{panel.dates[-1].date()}), 데이터셋 {len(ds):,}행 → {args.out}")
+    return 0
+
+
+def cmd_stock_train(args) -> int:
+    """종목 알파 모델(LightGBM) 최종 학습 — 월 1회 재학습 권장."""
+    import pandas as pd
+    from autotrader.equity.live import train_final
+    cfg = _cfg(args)
+    _setup_logging(None, args.verbose)
+    ds = pd.read_parquet(f"{args.data}/dataset_cap.parquet")
+    p = train_final(ds, cfg.msap.stock.model_path)
+    print(f"모델 저장: {p} (학습 {ds['date'].min().date()}~{ds['date'].max().date()}, {len(ds):,}행)")
+    return 0
+
+
 # ---------------------------------------------------------------------- 파서
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="autotrader", description="멀티에셋 알고리즘 자동매매")
@@ -288,6 +320,13 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status", help="최근 실행 이력")
     s.add_argument("-n", type=int, default=10)
     s.set_defaults(func=cmd_status)
+
+    sd = sub.add_parser("stock-data", help="KRX 전종목 데이터 동기화·피처 생성")
+    sd.add_argument("--out", default="data/krx")
+    sd.set_defaults(func=cmd_stock_data)
+    stt = sub.add_parser("stock-train", help="종목 알파 모델 학습")
+    stt.add_argument("--data", default="data/krx")
+    stt.set_defaults(func=cmd_stock_train)
 
     m = sub.add_parser("ml-validate", help="딥러닝 오버레이 워크포워드 검증")
     data_args(m)

@@ -16,3 +16,6 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+data/krx/
+data/marcap/
+data/research/sleeveB_equity.csv

@@ -14,18 +14,30 @@ broker:
 # 운용 유니버스: 모두 국내 상장 ETF → 국내주식 계좌 하나로 주식·금·채권·지수 분산
 # (운용사 리브랜딩으로 종목명이 바뀔 수 있어 코드 기준으로 관리. 배당/분배가 큰 ETF 는 가격수익률이
 #  총수익보다 낮게 잡히므로 채권은 분배가 거의 없는 '국채선물' 계열을 선택)
-universe:
+universe:                  # ETF 리스크패리티 슬리브(원화 기준 4자산 + 현금)
   risk_assets:
     - {symbol: "069500", name: "KODEX 200",              asset_class: 한국주식}
     - {symbol: "360750", name: "TIGER 미국S&P500",       asset_class: 미국주식}
-    - {symbol: "133690", name: "TIGER 미국나스닥100",    asset_class: 미국성장주}
     - {symbol: "411060", name: "ACE KRX금현물",          asset_class: 금}
-    - {symbol: "152380", name: "KODEX 국채선물10년",     asset_class: 한국장기채}
     - {symbol: "305080", name: "TIGER 미국채10년선물",   asset_class: 미국장기채}
   cash_asset: {symbol: "459580", name: "KODEX CD금리액티브(합성)", asset_class: 현금성}
 
-strategy:                  # AMR: 적응형 모멘텀 리스크패리티
-  name: amr
+# ── 기본 전략: MSAP(멀티 슬리브) = 종목 알파(ML) 70% + ETF 리스크패리티 30% ──────────────
+msap:
+  stock_weight: 0.70         # 공격적 0.8~1.0 / 균형 0.5~0.6 (reports/strategy_report.md 의 비중별 성과표 참고)
+  stock:
+    marcap_dir: data/marcap  # FinanceData/marcap 로컬 복제(실행 시 자동 git pull)
+    model_path: models/stock_lgbm.txt
+    top_n: 15                # 보유 종목 수
+    buffer: 2.5              # 보유 종목은 순위 15×2.5=37위 안이면 유지(회전율 절감)
+    universe_size: 600       # 시가총액 상위 600
+    min_amount: 200000000    # 60일 평균 거래대금 2억원 이상
+    max_weight: 0.10
+  rp_target_vol: 0.10
+  rp_vol_window_months: 12
+
+strategy:                  # name: msap(기본) | amr(ETF 모멘텀 전략만 단독 사용)
+  name: msap
   lookback_months: [3, 6, 12]
   top_k: 3                 # 6개 중 상위 3개
   vol_window_months: 3

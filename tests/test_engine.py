@@ -25,6 +25,7 @@ def _make(tmp_path, market, monkeypatch, *, when=datetime(2026, 11, 2, 9, 31, tz
     monkeypatch.chdir(tmp_path)
     risky = [c for c in market.columns if c != "CASH"]
     cfg = AppConfig()
+    cfg.strategy.name = "amr"
     cfg.universe = UniverseConfig([Asset(s, s) for s in risky], Asset("CASH", "CASH"))
     cfg.storage.db_path = str(tmp_path / "db.sqlite")
     cfg.storage.cache_dir = str(tmp_path / "cache")
@@ -125,3 +126,33 @@ def test_daemon_runs_once_per_day(tmp_path, market, monkeypatch):
     eng.run_once = lambda **kw: calls.append(kw) or orig(**kw)
     eng.run_daemon(stop_after=5)
     assert len(calls) == 1 and eng.store.rebalanced("2026-11")
+
+
+def test_msap_combines_stock_and_etf_sleeves(tmp_path, market, monkeypatch):
+    """멀티 슬리브: 주식 점수 상위 N + ETF 리스크패리티를 합쳐 실제 주문까지(데이터 계층은 스텁)."""
+    import autotrader.equity.live as live
+    import autotrader.equity.panel as panel_mod
+
+    eng, broker, cfg = _make(tmp_path, market, monkeypatch)
+    cfg.strategy.name = "msap"
+    cfg.msap.stock.top_n = 3
+    cfg.msap.stock.sync = False
+    stocks = ["005930", "000660", "035420", "051910", "068270"]
+    prices = {s: 50_000.0 + 1000 * i for i, s in enumerate(stocks)}
+    base_quote = broker._quote_fn
+    broker._quote_fn = lambda s: (Quote(s, prices[s], bid=prices[s], ask=prices[s]) if s in prices else base_quote(s))
+
+    class FakePanel:
+        names = pd.Series({s: f"종목{s}" for s in stocks})
+
+    monkeypatch.setattr(panel_mod, "build_panel", lambda *a, **k: FakePanel())
+    rows = pd.DataFrame({"code": stocks, "date": pd.Timestamp("2026-10-30")})
+    monkeypatch.setattr(live, "latest_rows", lambda *a, **k: rows)
+    monkeypatch.setattr(live, "score_rows", lambda r, p: pd.Series([5, 4, 3, 2, 1.0], index=stocks))
+    rep = eng.run_once()
+    assert rep.status == "done", rep.message
+    held = broker.get_account().positions
+    assert {"005930", "000660", "035420"} <= set(held) and "068270" not in held
+    stock_w = sum(rep.targets[s] for s in stocks[:3])
+    assert abs(stock_w - cfg.msap.stock_weight) < 1e-3  # 주식 슬리브 70% (리포트는 소수 4자리 반올림)
+    assert abs(sum(rep.targets.values()) - 1.0) < 1e-3

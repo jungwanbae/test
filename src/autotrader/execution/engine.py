@@ -16,6 +16,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -93,7 +94,9 @@ class TradingEngine:
                     return True, f"비중 이탈 {drift:.1%} > {thr:.0%}"
         return False, "리밸런싱 불필요"
 
-    def compute_targets(self, today: date) -> tuple[pd.Series, dict]:
+    def compute_targets(self, today: date, account=None) -> tuple[pd.Series, dict]:
+        if self.cfg.strategy.name == "msap":
+            return self._msap_targets(today, account if account is not None else self.broker.get_account())
         syms = self.cfg.universe.all_symbols()
         start = today - timedelta(days=365 * self.cfg.rebalance.history_years + 30)
         closes = self.history.closes(syms, start, today)
@@ -109,6 +112,47 @@ class TradingEngine:
         w = strategy.target_weights(closes, ctx)
         diag = {**ctx.diagnostics, "signal_date": str(closes.index[-1].date()), **ml_note}
         return w, diag
+
+    def _msap_targets(self, today: date, account) -> tuple[pd.Series, dict]:
+        """멀티 슬리브: 종목 알파(ML 랭킹) + ETF 리스크패리티."""
+        from dataclasses import asdict
+
+        from autotrader.equity.live import StockSleeveConfig, latest_rows, score_rows, select, sync_marcap
+        from autotrader.equity.panel import build_panel
+        from autotrader.strategy.multi_sleeve import MSAPConfig, combine, etf_sleeve_weights
+
+        ms = self.cfg.msap
+        st_kw = {k: v for k, v in asdict(ms.stock).items() if k in StockSleeveConfig.__dataclass_fields__}
+        mcfg = MSAPConfig(stock_weight=ms.stock_weight, stock=StockSleeveConfig(**st_kw),
+                          rp_target_vol=ms.rp_target_vol, rp_vol_window_months=ms.rp_vol_window_months,
+                          rp_max_leverage=ms.rp_max_leverage)
+        diag: dict = {}
+        uni = self.cfg.universe
+        risk = [a.symbol for a in uni.risk_assets]
+        cash = uni.cash_asset.symbol if uni.cash_asset else None
+        start = today - timedelta(days=365 * self.cfg.rebalance.history_years + 30)
+        closes = self.history.closes(uni.all_symbols(), start, today)
+        closes = closes[closes.index < pd.Timestamp(today)]
+        etf_w = etf_sleeve_weights(closes.resample("ME").last(), risk, cash, mcfg, diag)
+
+        data_dir = sync_marcap(mcfg.stock.marcap_dir) if ms.stock.sync else Path(mcfg.stock.marcap_dir) / "data"
+        panel = build_panel(data_dir, start_year=1995)
+        rows = latest_rows(panel, mcfg.stock, as_of=pd.Timestamp(today) - pd.Timedelta(days=1))
+        sig_date = rows["date"].max()
+        age = (pd.Timestamp(today) - sig_date).days
+        if age > ms.stock.max_signal_age_days:
+            raise RuntimeError(f"종목 데이터가 {age}일 지났습니다(신호일 {sig_date.date()}) → marcap 갱신 확인")
+        scores = score_rows(rows, mcfg.stock.model_path)
+        prev = self.store.last_targets() or {}
+        etf_set = set(uni.all_symbols())
+        prev_stocks = [s for s in prev if s not in etf_set]
+        held = [s for s in prev_stocks if account.qty(s) > 0]
+        stock_w = select(scores, held, mcfg.stock)
+        self.names.update({c: str(panel.names.get(c, c)) for c in stock_w.index})
+        target = combine(stock_w, etf_w, mcfg.stock_weight, prev_stocks)
+        diag.update({"signal_date": str(sig_date.date()), "stocks": list(stock_w.index),
+                     "stock_scores": scores.loc[stock_w.index].round(4).to_dict()})
+        return target, diag
 
     def _ml_scores(self, closes: pd.DataFrame, blend: float):
         try:
@@ -147,9 +191,9 @@ class TradingEngine:
 
         run_id = self.store.start_run(mode)
         try:
-            target, diag = self.compute_targets(today)
-            targets = {s: round(float(v), 4) for s, v in target.items()}
             account = self.broker.get_account()
+            target, diag = self.compute_targets(today, account)
+            targets = {s: round(float(v), 4) for s, v in target.items()}
             quotes = self._quotes(list(target.index))
             plan = self._plan(target, account, quotes)
             self.risk.check_plan(plan)
@@ -181,7 +225,7 @@ class TradingEngine:
         out = {}
         for s in symbols:
             q = self.broker.get_quote(s)
-            self.risk.check_quote(q, None)
+            self.risk.check_quote(q, None, self.cfg.universe.kind_of(s))
             out[s] = q
         return out
 

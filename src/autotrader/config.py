@@ -34,7 +34,7 @@ class UniverseConfig:
         for a in self.risk_assets + ([self.cash_asset] if self.cash_asset else []):
             if a.symbol == symbol:
                 return a.kind
-        return "etf"
+        return "stock"  # 유니버스(ETF) 밖 종목 = 종목 알파 슬리브의 개별주식
 
     def name_of(self, symbol: str) -> str:
         for a in self.risk_assets + ([self.cash_asset] if self.cash_asset else []):
@@ -45,7 +45,7 @@ class UniverseConfig:
 
 @dataclass
 class StrategyConfig:
-    name: str = "amr"
+    name: str = "msap"                  # msap(멀티 슬리브, 기본) | amr(ETF 모멘텀만)
     lookback_months: list[float] = field(default_factory=lambda: [3, 6, 12])
     lookback_weights: list[float] | None = None
     top_k: int = 3
@@ -56,6 +56,29 @@ class StrategyConfig:
     trend_sma_months: float | None = None
     drawdown_brake: float | None = None
     drawdown_brake_scale: float = 0.5
+
+
+@dataclass
+class StockSleeveSettings:
+    marcap_dir: str = "data/marcap"          # FinanceData/marcap 로컬 복제(매일 갱신)
+    model_path: str = "models/stock_lgbm.txt"
+    top_n: int = 15
+    buffer: float = 2.5
+    universe_size: int = 600
+    min_amount: float = 2e8                  # 60일 평균 거래대금 하한(원)
+    max_weight: float = 0.10
+    min_price: float = 1000.0
+    sync: bool = True                        # 실행 시 marcap git pull
+    max_signal_age_days: int = 5             # 데이터가 이보다 오래되면 주식 슬리브 중단
+
+
+@dataclass
+class MSAPSettings:
+    stock_weight: float = 0.70               # 종목 알파 슬리브 비중(나머지 = ETF 리스크패리티)
+    stock: StockSleeveSettings = field(default_factory=StockSleeveSettings)
+    rp_target_vol: float = 0.10
+    rp_vol_window_months: float = 12
+    rp_max_leverage: float = 1.0
 
 
 @dataclass
@@ -92,7 +115,8 @@ class RiskConfig:
     cash_buffer_pct: float = 0.005
     max_order_value: float = 50_000_000
     max_turnover_pct: float = 2.0         # 1회 리밸런싱 매매대금/자산 상한(200%)
-    max_price_deviation: float = 0.10     # 전일종가 대비 ±10% 초과 시세는 이상치로 보고 중단
+    max_price_deviation: float = 0.10     # ETF: 전일종가 대비 ±10% 초과 시세는 이상치로 보고 중단
+    max_price_deviation_stock: float = 0.30  # 개별주식: 가격제한폭(±30%) 초과만 이상치
     kill_switch_file: str = "STOP"
     require_live_confirm: bool = True
 
@@ -134,6 +158,7 @@ class AppConfig:
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
+    msap: MSAPSettings = field(default_factory=MSAPSettings)
     ml: MLSettings = field(default_factory=MLSettings)
     rebalance: RebalanceConfig = field(default_factory=RebalanceConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)

@@ -29,6 +29,9 @@ class BacktestConfig:
     drift_threshold: float | None = None  # 주기 사이 비중이탈이 이 값을 넘으면 추가 리밸런싱
     fractional: bool = True              # False 면 1주 단위
     cash_rate_annual: float = 0.0        # 미투자 현금 이자(연)
+    max_leverage: float = 1.0            # 총노출 상한(>1 이면 차입 허용)
+    borrow_spread: float = 0.015         # 차입금리 = 기준(현금자산 수익률 또는 cash_rate) + 스프레드(연)
+    borrow_rate_symbol: str | None = None  # 차입 기준금리로 쓸 현금성 자산(예: CASH_KRW)
     stock_symbols: frozenset[str] = frozenset()  # 매도세 대상(개별주식). 나머지는 ETF 로 간주
     start: str | None = None             # 이 날짜 이후 첫 신호부터 운용
 
@@ -111,7 +114,8 @@ def run_backtest(prices: pd.DataFrame, strategy: Strategy, cfg: BacktestConfig |
             cost_sum += c + q * prow[s] * slip
             trades.append((px.index[i], s, -q, prow[s], c))
         need = sum(q * prow[s] * (1 + slip) * (1 + cfg.fees.total_rate) for s, q in buys.items())
-        ratio = min(1.0, cash / need) if need > 0 else 1.0
+        budget = cash + max(0.0, cfg.max_leverage - 1.0) * equity  # 레버리지 한도까지 차입 가능
+        ratio = min(1.0, budget / need) if need > 0 and budget > 0 else (1.0 if need <= 0 else 0.0)
         for s, q in buys.items():
             q = q * ratio
             if not cfg.fractional:
@@ -128,10 +132,15 @@ def run_backtest(prices: pd.DataFrame, strategy: Strategy, cfg: BacktestConfig |
         turn[px.index[i]] = traded / equity
         costs[px.index[i]] = cost_sum
 
+    brw = prices[cfg.borrow_rate_symbol].sort_index().ffill() if cfg.borrow_rate_symbol else None
+    spread_bar = (1 + cfg.borrow_spread) ** (1 / bars.periods_per_year) - 1
     for i, t in enumerate(px.index):
         prow = px.iloc[i]
         if i > 0 and cash > 0:
             cash *= 1 + cash_rate_bar
+        elif i > 0 and cash < 0:  # 차입 이자
+            base = (brw.loc[t] / brw.loc[px.index[i - 1]] - 1) if brw is not None else cash_rate_bar
+            cash *= 1 + base + spread_bar
         if pending and pending[0] == i:
             execute(i, pending[1])
             pending = None

@@ -197,7 +197,8 @@ def test_default_config_loads():
     cfg = load_config("config/default.yaml")
     assert isinstance(cfg, AppConfig)
     assert cfg.broker.name == "nh_plug" and cfg.broker.env == "mock"
-    assert len(cfg.universe.risk_assets) == 6 and cfg.universe.cash_asset.symbol == "459580"
+    assert len(cfg.universe.risk_assets) == 4 and cfg.universe.cash_asset.symbol == "459580"
+    assert cfg.strategy.name == "msap" and cfg.msap.stock_weight == 0.70
 
 
 def test_config_rejects_unknown_keys(tmp_path):
@@ -217,3 +218,14 @@ def test_ml_portfolio_gate_rejects_noise(trend_prices):
     assert set(res) >= {"sharpe_base", "sharpe_ml", "sharpe_uplift", "passed"}
     oracle = trend_prices[assets].pct_change(21).shift(-22)  # 미래를 아는 예측 → 잡음보다 나빠선 안 됨
     assert portfolio_uplift(trend_prices, make, oracle, 1.0, BacktestConfig())["sharpe_ml"] >= res["sharpe_ml"] - 1e-9
+
+
+def test_price_deviation_is_instrument_aware():
+    from autotrader.config import RiskConfig
+    from autotrader.models import Quote
+    from autotrader.portfolio.risk import RiskManager, RiskViolation
+    rm = RiskManager(RiskConfig(), is_live=False)
+    jump = Quote("X", 11_500, prev_close=10_000)  # +15%
+    rm.check_quote(jump, None, "stock")            # 주식은 가격제한폭 이내 → 통과
+    with pytest.raises(RiskViolation):
+        rm.check_quote(jump, None, "etf")          # ETF 가 +15% 면 이상치

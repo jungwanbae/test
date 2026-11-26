@@ -45,6 +45,7 @@ class AMRParams:
     drawdown_brake_scale: float = 0.5
     ml_blend: float = 0.0                  # 0~1. ML 점수를 순위에 반영하는 비율(검증 통과 시에만)
     cov_shrink: float = 0.10
+    max_leverage: float = 1.0              # >1 이면 목표변동성까지 레버리지(2배 ETF 등으로 구현)
 
 
 class AMRStrategy(Strategy):
@@ -110,12 +111,12 @@ class AMRStrategy(Strategy):
         w = base.where(eligible, 0.0)
         w = w.clip(upper=p.max_weight)
 
-        # ---- 변동성 타기팅(레버리지 없음)
+        # ---- 변동성 타기팅(max_leverage=1 이면 축소만, >1 이면 목표까지 확대)
         scale = 1.0
         if p.target_vol and w.sum() > 0 and np.isfinite(cov.values).all():
             est = portfolio_vol(w, cov)
-            if est > p.target_vol:
-                scale = p.target_vol / est
+            if est > 0:
+                scale = min(p.max_leverage, p.target_vol / est) if p.max_leverage > 1 else min(1.0, p.target_vol / est)
             diag["est_vol"] = round(est, 4)
         # ---- 낙폭 브레이크(선택)
         if p.drawdown_brake and ctx.equity_drawdown <= -abs(p.drawdown_brake):
@@ -130,9 +131,11 @@ class AMRStrategy(Strategy):
 
     def _fill_cash(self, w: pd.Series) -> pd.Series:
         w = w.clip(lower=0.0)
+        cap = max(1.0, self.p.max_leverage)
+        risk = w.drop(self.p.cash_asset) if self.p.cash_asset else w
+        if float(risk.sum()) > cap + 1e-9:
+            w = w * (cap / float(risk.sum()))
+            risk = w.drop(self.p.cash_asset) if self.p.cash_asset else w
         if self.p.cash_asset:
-            w[self.p.cash_asset] = max(0.0, 1.0 - float(w.drop(self.p.cash_asset).sum()))
-        total = float(w.sum())
-        if total > 1.0 + 1e-9:
-            w = w / total
+            w[self.p.cash_asset] = max(0.0, 1.0 - float(risk.sum()))
         return w

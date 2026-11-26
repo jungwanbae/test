@@ -30,9 +30,10 @@ class RiskManager:
             if o.value > self.cfg.max_order_value:
                 raise RiskViolation(f"{o.symbol} 주문금액 {o.value:,.0f}원이 한도 {self.cfg.max_order_value:,.0f}원 초과")
 
-    def check_quote(self, q: Quote, ref_close: float | None) -> None:
+    def check_quote(self, q: Quote, ref_close: float | None, kind: str = "etf") -> None:
         ref = q.prev_close or ref_close
-        if ref and ref > 0 and abs(q.price / ref - 1) > self.cfg.max_price_deviation:
+        limit = self.cfg.max_price_deviation_stock if kind == "stock" else self.cfg.max_price_deviation
+        if ref and ref > 0 and abs(q.price / ref - 1) > limit:
             raise RiskViolation(f"{q.symbol} 시세 이상: 현재가 {q.price:,.0f} vs 기준 {ref:,.0f}")
 
     def check_order(self, req: OrderRequest, q: Quote) -> None:
