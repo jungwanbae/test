@@ -30,7 +30,8 @@ def _write_marcap(tmp_path, n_days=420, n_stocks=40, seed=0):
             else:
                 base = px
             rows.append({"Date": d, "Code": code.lstrip("0") if k == 1 else code, "Name": f"S{k}", "Market": "KOSPI",
-                         "Dept": None, "Open": base, "Close": new, "Changes": new - base,
+                         "Dept": None, "Open": base, "High": max(base, new) * 1.01, "Low": min(base, new) * 0.99,
+                         "Close": new, "Changes": new - base,
                          "Amount": 5e8 * (1 + k), "Marcap": new * 1e7 * (1 + k), "Volume": 1000.0})
             px = new
     # 우선주·스팩(제외 대상)
@@ -135,3 +136,21 @@ def test_deflated_sharpe_penalises_many_trials():
     few = deflated_sharpe(r, n_trials=2, trial_sharpes_std=0.3)
     many = deflated_sharpe(r, n_trials=500, trial_sharpes_std=0.3)
     assert 0 <= many["dsr"] < few["dsr"] <= 1
+
+
+def test_stop_loss_limits_single_position_loss(small):
+    p, ds = small
+    code = p.ret.columns[3]
+    d0 = p.dates[300]
+    tg = {d0: pd.Series({code: 1.0})}
+    p2 = type(p)(**{f: getattr(p, f).copy() for f in ("ret", "gap", "close", "amount", "marcap", "flag", "hi", "lo")},
+                 names=p.names, market=p.market)
+    crash = p2.dates.get_loc(d0) + 5
+    p2.ret.iloc[crash, p2.ret.columns.get_loc(code)] = -0.25   # 하루 −25% 급락(장중 저가도 그 근처)
+    p2.gap.iloc[crash, p2.ret.columns.get_loc(code)] = -0.02
+    free = StockCosts(commission=0, slippage_model="fixed", slippage=0, sell_tax_override=0)
+    no_stop = simulate(p2, tg, free, start=str(d0.date()), end=str(p2.dates[crash + 3].date()))
+    with_stop = simulate(p2, tg, free, start=str(d0.date()), end=str(p2.dates[crash + 3].date()), stop_loss=0.08)
+    assert with_stop.holdings["_stops"] == 1
+    assert with_stop.equity.iloc[-1] > no_stop.equity.iloc[-1]
+    assert with_stop.equity.iloc[-1] >= 0.90   # 손실은 대략 손절선(−8%) 수준에서 멈춤

@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id 
                                    accepted INTEGER, message TEXT);
 CREATE TABLE IF NOT EXISTS rebalances (period TEXT PRIMARY KEY, ts TEXT, run_id INTEGER, targets TEXT);
 CREATE TABLE IF NOT EXISTS equity (day TEXT PRIMARY KEY, ts TEXT, equity REAL, cash REAL, positions TEXT);
+CREATE TABLE IF NOT EXISTS stops (period TEXT, symbol TEXT, ts TEXT, detail TEXT, PRIMARY KEY (period, symbol));
 """
 
 
@@ -58,6 +59,14 @@ class StateStore:
     def last_targets(self) -> dict | None:
         row = self._db.execute("SELECT targets FROM rebalances ORDER BY ts DESC LIMIT 1").fetchone()
         return json.loads(row[0]) if row else None
+
+    def mark_stopped(self, period: str, symbol: str, detail: str = "") -> None:
+        self._db.execute("INSERT OR REPLACE INTO stops(period, symbol, ts, detail) VALUES (?,?,?,?)",
+                         (period, symbol, datetime.now().isoformat(timespec="seconds"), detail))
+        self._db.commit()
+
+    def stopped(self, period: str) -> set[str]:
+        return {r[0] for r in self._db.execute("SELECT symbol FROM stops WHERE period=?", (period,))}
 
     def snapshot_equity(self, day: str, equity: float, cash: float, positions: dict) -> None:
         self._db.execute("INSERT OR REPLACE INTO equity(day, ts, equity, cash, positions) VALUES (?,?,?,?,?)",

@@ -91,6 +91,27 @@ def select(scores: pd.Series, held: list[str], cfg: StockSleeveConfig) -> pd.Ser
     return w / w.sum()
 
 
+def liquidity_cap(weights: pd.Series, adv20: pd.Series, sleeve_capital: float, cap: float = 0.10) -> tuple[pd.Series, dict]:
+    """종목별 보유금액이 20일 평균 거래대금 × cap 을 넘지 않게 비중을 줄인다(슬리피지·부분체결 위험 통제).
+
+    반환: (조정 비중 — 합이 1 미만일 수 있음, 축소 내역)
+    """
+    out, cut = weights.copy(), {}
+    if sleeve_capital <= 0:
+        return out, cut
+    for c, w in weights.items():
+        adv = float(adv20.get(c, float("nan")))
+        if not adv == adv or adv <= 0:  # NaN/0 → 매수하지 않음
+            out[c] = 0.0
+            cut[c] = "거래대금 정보 없음"
+            continue
+        limit = cap * adv / sleeve_capital
+        if w > limit:
+            out[c] = limit
+            cut[c] = f"{w:.1%} → {limit:.1%} (20일 평균 거래대금 {adv / 1e8:.1f}억원의 {cap:.0%})"
+    return out, cut
+
+
 def build_training_dataset(panel, cfg: StockSleeveConfig) -> pd.DataFrame:
     dates = sample_dates(panel.dates, "W")
     dates = dates[dates >= panel.dates[0] + pd.Timedelta(days=400)]
@@ -103,4 +124,4 @@ def sleeve_config_dict(cfg: StockSleeveConfig) -> dict:
 
 
 __all__ = ["StockSleeveConfig", "sync_marcap", "latest_rows", "train_final", "score_rows", "select",
-           "build_training_dataset", "build_panel"]
+           "liquidity_cap", "build_training_dataset", "build_panel"]

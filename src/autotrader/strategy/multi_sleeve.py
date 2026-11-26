@@ -6,8 +6,10 @@
                           12개월 공분산, 목표변동성 10%, 나머지는 CD금리 ETF
   ⇒ 두 슬리브의 상관이 낮아(위기 때 원화 약세가 해외자산을 지지) 포트폴리오 낙폭이 크게 줄어든다.
 
-검증(2001~2026.09, 실비용·다음날 시가 체결, 월말 기준): CAGR 20.0%, Sharpe 0.98, 월간 MDD −28.5%,
-                                                  표본외(2013~) CAGR 16.6% — reports/strategy_report.md
+검증(2001.02~2026.09, 실비용·다음날 시가 체결):
+  MSAP-M(미너비니 −15% 손절, 기본): CAGR 18.1%, Sharpe 0.91, 일별 MDD −32.1%, 검증(2013~) 16.8%, 최근 10년 14.8%
+  MSAP(손절 없음):                 CAGR 20.0%, Sharpe 0.98, 일별 MDD −41.1%, 검증(2013~) 16.6%, 최근 10년 13.9%
+  — reports/minervini_report.md, reports/strategy_report.md
 """
 from __future__ import annotations
 

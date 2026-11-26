@@ -81,6 +81,9 @@ class TradingEngine:
                 return True, f"{period} 정기 리밸런싱"
         thr = self.cfg.rebalance.drift_threshold
         last = self.store.last_targets()
+        if last:  # 이번 달 손절한 종목은 의도된 이탈이므로 비중 이탈 계산에서 제외
+            stopped = self.store.stopped(period)
+            last = {s: w for s, w in last.items() if s not in stopped}
         if thr and last:
             acct = self.broker.get_account()
             prices = {s: (acct.positions[s].last_price if s in acct.positions else 0.0) for s in last}
@@ -117,7 +120,8 @@ class TradingEngine:
         """멀티 슬리브: 종목 알파(ML 랭킹) + ETF 리스크패리티."""
         from dataclasses import asdict
 
-        from autotrader.equity.live import StockSleeveConfig, latest_rows, score_rows, select, sync_marcap
+        from autotrader.equity.live import (StockSleeveConfig, latest_rows, liquidity_cap, score_rows, select,
+                                            sync_marcap)
         from autotrader.equity.panel import build_panel
         from autotrader.strategy.multi_sleeve import MSAPConfig, combine, etf_sleeve_weights
 
@@ -148,11 +152,71 @@ class TradingEngine:
         prev_stocks = [s for s in prev if s not in etf_set]
         held = [s for s in prev_stocks if account.qty(s) > 0]
         stock_w = select(scores, held, mcfg.stock)
+        stopped = self.store.stopped(today.strftime("%Y-%m"))
+        if stopped & set(stock_w.index):   # 손절 종목은 다음 달 리밸런싱 전까지 재매수하지 않음(슬롯은 현금)
+            diag["stopped_excluded"] = sorted(stopped & set(stock_w.index))
+            stock_w = stock_w.where(~stock_w.index.isin(list(stopped)), 0.0)
+        # 유동성 한도: 종목당 보유금액 ≤ 20일 평균 거래대금 × adv_cap (초과분은 현금성 ETF 로)
+        equity = account.cash + sum(p.market_value for p in account.positions.values())
+        if self.cfg.risk.capital_limit:
+            equity = min(equity, self.cfg.risk.capital_limit)
+        adv20 = self._adv20(panel, list(stock_w.index), sig_date)
+        stock_w, cut = liquidity_cap(stock_w, adv20, equity * mcfg.stock_weight, ms.stock.adv_cap)
+        if cut:
+            diag["liquidity_cut"] = cut
+            log.warning("유동성 한도로 비중 축소: %s", cut)
         self.names.update({c: str(panel.names.get(c, c)) for c in stock_w.index})
         target = combine(stock_w, etf_w, mcfg.stock_weight, prev_stocks)
+        leftover = mcfg.stock_weight * (1.0 - float(stock_w.sum()))
+        if leftover > 1e-9 and cash:
+            target[cash] = target.get(cash, 0.0) + leftover
         diag.update({"signal_date": str(sig_date.date()), "stocks": list(stock_w.index),
                      "stock_scores": scores.loc[stock_w.index].round(4).to_dict()})
         return target, diag
+
+    def _stop_check(self, today: date, dry_run: bool = False) -> str:
+        """미너비니식 손절(종가 기준): 전일 종가가 평균 매입가 × (1 − stop_loss) 이하인 전략 보유 종목을 매도.
+
+        백테스트의 stop_mode='close'(종가 확인 → 다음날 시가 매도)와 같은 규칙이다.
+        """
+        stop = float(self.cfg.msap.stock.stop_loss)
+        prev = self.store.last_targets() or {}
+        etf_set = set(self.cfg.universe.all_symbols())
+        managed = [s for s in prev if s not in etf_set]
+        if not managed:
+            return ""
+        acct = self.broker.get_account()
+        hits = {}
+        for s in managed:
+            pos = acct.positions.get(s)
+            if not pos or pos.qty <= 0 or pos.avg_price <= 0:
+                continue
+            q = self.broker.get_quote(s)
+            ref = q.prev_close or q.price
+            if ref <= pos.avg_price * (1 - stop):
+                hits[s] = f"전일종가 {ref:,.0f} ≤ 매입가 {pos.avg_price:,.0f}×{1 - stop:.2f}"
+        if not hits:
+            return ""
+        names = ", ".join(f"{self.names.get(s, s)}({s})" for s in hits)
+        if dry_run:
+            return f"[드라이런] 손절 대상 {len(hits)}종목: {names}"
+        run_id = self.store.start_run("stop")
+        self._execute(run_id, pd.Series({s: 0.0 for s in hits}))
+        period = today.strftime("%Y-%m")
+        for s, why in hits.items():
+            self.store.mark_stopped(period, s, why)
+        msg = f"손절 {len(hits)}종목 매도: {names}"
+        self.store.finish_run(run_id, "done", msg, {"stops": hits})
+        self.notifier.send(f"🛑 {msg}")
+        return msg
+
+    @staticmethod
+    def _adv20(panel, codes: list[str], as_of) -> pd.Series:
+        try:
+            amt = panel.amount.loc[:as_of, [c for c in codes if c in panel.amount.columns]].tail(20)
+            return amt.mean()
+        except Exception:  # 테스트용 가짜 패널 등 거래대금이 없으면 한도 미적용
+            return pd.Series({c: float("inf") for c in codes})
 
     def _ml_scores(self, closes: pd.DataFrame, blend: float):
         try:
@@ -181,13 +245,23 @@ class TradingEngine:
             hh, mm = _hm(self.cfg.execution.deadline)
             if now.time() >= now.replace(hour=hh, minute=mm).time() or now.time() < now.replace(hour=9, minute=0).time():
                 return RunReport("skipped", "주문 가능 시간(09:00~마감) 아님")
+        stop_note = ""
+        if self.cfg.strategy.name == "msap" and self.cfg.msap.stock.stop_loss:
+            try:
+                stop_note = self._stop_check(today, dry_run=dry_run)
+            except (BrokerError, RiskViolation, RuntimeError, ValueError) as e:
+                log.exception("손절 점검 실패")
+                self.notifier.send(f"❌ 손절 점검 실패: {e}")
+                return RunReport("error", f"손절 점검 실패: {e}")
         try:
             due, why = self.rebalance_due(today, force=force)
+            if stop_note:
+                why = f"{stop_note} · {why}"
         except BrokerError as e:
             self.notifier.send(f"❌ 잔고 조회 실패: {e}")
             return RunReport("error", f"잔고 조회 실패: {e}")
         if not due:
-            return RunReport("skipped", why)
+            return RunReport("stopped" if stop_note else "skipped", (stop_note + " · " if stop_note else "") + why)
 
         run_id = self.store.start_run(mode)
         try:

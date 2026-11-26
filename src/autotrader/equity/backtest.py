@@ -33,6 +33,9 @@ class StockCosts:
     slippage_model: str = "sqrt"
     slip_base: float = 0.0005
     slip_k: float = 0.003
+    # 운용금액 기반 시장충격(capital 지정 시): 충격 = impact_k·σ일·√(주문금액/20일 평균 거래대금)
+    impact_k: float = 0.8
+    adv_cap: float = 0.10         # 하루 주문 ≤ 거래대금의 10% (초과분은 미체결 → 다음 리밸런싱/부분체결)
 
     def sell_tax(self, d: date) -> float:
         if self.sell_tax_override is not None:
@@ -54,6 +57,7 @@ class PortfolioRules:
     risk_off_exposure: float = 0.0
     target_mkt_vol: float = 0.20  # voltarget: 노출 = clip(목표 / 시장 20일 변동성, 하한, 1)
     min_trade: float = 0.002      # 자산 대비 0.2% 미만 차이는 매매 생략
+    cash_for_missing: bool = False  # True: 후보가 top_n 보다 적으면 빈 슬롯은 현금(1/top_n 고정 비중)
 
 
 @dataclass
@@ -94,9 +98,13 @@ def make_targets(ds: pd.DataFrame, score: str, rules: PortfolioRules,
     """신호일별 목표비중(합 = 국면 노출도)."""
     out: dict[pd.Timestamp, pd.Series] = {}
     held: list[str] = []
-    g = ds.dropna(subset=[score]).groupby("date")
-    for d, df in g:
+    for d, full in ds.groupby("date"):
         if signal_dates is not None and d not in signal_dates:
+            continue
+        df = full.dropna(subset=[score])
+        if df.empty:                       # 통과 종목이 없으면 전량 현금(이전 보유도 매도)
+            out[d] = pd.Series(dtype=float)
+            held = []
             continue
         df = df.sort_values(score, ascending=False)
         order = list(df["code"])
@@ -112,6 +120,8 @@ def make_targets(ds: pd.DataFrame, score: str, rules: PortfolioRules,
             w = pd.Series(1.0 / len(sel), index=sel)
         w = w.clip(upper=rules.max_weight)
         w = w / w.sum()
+        if rules.cash_for_missing and len(sel) < rules.top_n:
+            w = w * len(sel) / rules.top_n
         exp = regime_exposure(df.iloc[0], rules)
         out[d] = w * exp
         held = sel
@@ -120,16 +130,48 @@ def make_targets(ds: pd.DataFrame, score: str, rules: PortfolioRules,
 
 def simulate(p: Panel, targets: dict[pd.Timestamp, pd.Series], costs: StockCosts | None = None,
              start: str | None = None, end: str | None = None, cash_rate: float = 0.0,
-             min_trade: float = 0.002) -> SimResult:
+             min_trade: float = 0.002, stop_loss: float | None = None,
+             breakeven_after: float | None = None, capital: float | None = None,
+             stop_mode: str = "intraday") -> SimResult:
+    """stop_loss: 평균 매입가 대비 하락률(예 0.08) — 장중 저가가 닿으면 손절가(갭하락이면 시가)로 청산,
+    다음 리밸런싱까지 현금 보유(미너비니식 손실 제한). breakeven_after: 이 수익률 도달 후 손절선을 본전으로.
+    stop_mode: intraday(장중 저가 터치 시 손절가 체결 — 증권사 스톱지정가 주문) |
+               close(종가가 손절선 아래면 다음날 시가 매도 — 하루 1회 실행하는 데몬과 동일)."""
     costs = costs or StockCosts()
     dates = p.dates
     R = p.ret.values
     Gp = p.gap.values
+    LO = p.lo.values if (stop_loss and p.lo is not None) else None
     if costs.slippage_model == "sqrt":
         adv = p.amount.rolling(60, min_periods=10).mean().values
         SL = costs.slip_base + costs.slip_k / np.sqrt(np.clip(np.nan_to_num(adv, nan=1e7) / 1e8, 0.05, None))
     else:
         SL = None
+    ADV = SIG = None
+    if capital:
+        ADV = p.amount.rolling(20, min_periods=10).mean().values
+        SIG = p.ret.rolling(20, min_periods=15).std().values
+
+    def slip_of(t: int, j: int, value: float, equity_now: float = 1.0) -> float:
+        """value: 시뮬레이터 단위 주문금액. 운용금액을 capital 로 '고정'한 원화 주문 크기로 환산
+        (복리로 자산이 불어나도 같은 운용 규모에서의 체결비용을 본다)."""
+        base = SL[t - 1, j] if SL is not None else costs.slippage
+        if ADV is None:
+            return base
+        order = value / max(equity_now, 1e-12) * capital  # 원화 주문금액
+        adv, sg = ADV[t - 1, j], SIG[t - 1, j]
+        adv = adv if np.isfinite(adv) and adv > 0 else 1e8
+        sg = sg if np.isfinite(sg) and sg > 0 else 0.03
+        return max(base, costs.slip_base + costs.impact_k * sg * np.sqrt(order / adv))
+
+    def cap_of(t: int, j: int, equity_now: float = 1.0) -> float:
+        """하루 체결 가능한 최대 주문금액(시뮬레이터 단위) = 거래대금 × adv_cap 을 운용금액 비율로 환산."""
+        if ADV is None:
+            return np.inf
+        adv = ADV[t - 1, j]
+        adv = adv if np.isfinite(adv) and adv > 0 else 0.0
+        return costs.adv_cap * adv / capital * equity_now
+
     col = {c: i for i, c in enumerate(p.ret.columns)}
     last_valid = (~np.isnan(R)).cumsum(axis=0).argmax(axis=0)  # 종목별 마지막 관측 위치
     pos_of = {d: i for i, d in enumerate(dates)}
@@ -142,70 +184,116 @@ def simulate(p: Panel, targets: dict[pd.Timestamp, pd.Series], costs: StockCosts
     e = pos_of[dates[dates <= pd.Timestamp(end)][-1]] if end else len(dates) - 1
     cr = (1 + cash_rate) ** (1 / 252) - 1
     positions: dict[int, float] = {}
+    basis: dict[int, float] = {}   # 평균 매입가 기준 원금(가치 / 매입가 대비 배율)
+    peak: dict[int, float] = {}
     cash = 1.0
     eq, ex, tv = [], [], {}
     paid = 0.0
     holdings = {}
+    stops = 0
+    pending_exit: set[int] = set()
     for t in range(s, e + 1):
         d = dates[t].date()
+        tax = costs.sell_tax(d)
         # 상장폐지 처리
         for j in [j for j in positions if np.isnan(R[t, j]) and t > last_valid[j]]:
             cash += positions.pop(j) * (1 - costs.delist_haircut)
+            basis.pop(j, None)
+            peak.pop(j, None)
+        # 시가 반영(전일종가 → 시가)
+        for j in positions:
+            g = Gp[t, j]
+            if not np.isnan(g):
+                positions[j] *= 1 + g
+        for j in [j for j in pending_exit if j in positions and not np.isnan(R[t, j])]:   # close 모드 손절 체결
+            value = positions.pop(j)
+            slip = slip_of(t, j, value, cash + sum(positions.values()) + value) * 1.5
+            fee = value * (costs.commission + slip + tax)
+            cash += value - fee
+            paid += fee
+            basis.pop(j, None)
+            peak.pop(j, None)
+            stops += 1
+        pending_exit = {j for j in pending_exit if j in positions}
         if t in execs:
-            for j in positions:
-                g = Gp[t, j]
-                if not np.isnan(g):
-                    positions[j] *= 1 + g
             equity = cash + sum(positions.values())
             tgt = {col[c]: float(w) * equity for c, w in execs[t].items() if c in col}
             traded = 0.0
-            tax = costs.sell_tax(d)
-            # 매도 먼저
-            for j in list(set(positions) | set(tgt)):
+            for j in list(set(positions) | set(tgt)):     # 매도 먼저
                 cur = positions.get(j, 0.0)
                 delta = tgt.get(j, 0.0) - cur
                 if np.isnan(R[t, j]) or abs(delta) < 1e-12:
                     continue  # 거래정지 → 매매 불가
                 if delta < 0 and (-delta >= costs_min(equity, min_trade) or tgt.get(j, 0.0) == 0.0):
-                    sell = -delta
-                    slip = SL[t - 1, j] if SL is not None else costs.slippage
+                    sell = min(-delta, cap_of(t, j, equity))   # 유동성 한도 초과분은 미체결
+                    slip = slip_of(t, j, sell, equity)
                     fee = sell * (costs.commission + slip + tax)
+                    if j in basis and cur > 0:
+                        basis[j] *= (cur - sell) / cur
                     positions[j] = cur - sell
                     cash += sell - fee
                     paid += fee
                     traded += sell
                     if positions[j] <= 1e-12:
                         positions.pop(j)
-            buys = {j: tgt[j] - positions.get(j, 0.0) for j in tgt
+                        basis.pop(j, None)
+                        peak.pop(j, None)
+            buys = {j: min(tgt[j] - positions.get(j, 0.0), cap_of(t, j, equity)) for j in tgt
                     if not np.isnan(R[t, j]) and tgt[j] - positions.get(j, 0.0) >= costs_min(equity, min_trade)}
-            slips = {j: (SL[t - 1, j] if SL is not None else costs.slippage) for j in buys}
+            buys = {j: b for j, b in buys.items() if b > 0}
+            slips = {j: slip_of(t, j, b, equity) for j, b in buys.items()}
             need = sum(b * (1 + costs.commission + slips[j]) for j, b in buys.items())
             ratio = min(1.0, cash / need) if need > 0 else 1.0
             for j, b in buys.items():
                 b *= ratio
                 fee = b * (costs.commission + slips[j])
                 positions[j] = positions.get(j, 0.0) + b
+                basis[j] = basis.get(j, 0.0) + b
                 cash -= b + fee
                 paid += fee
                 traded += b
             tv[dates[t]] = traded / equity if equity > 0 else 0.0
             holdings[dates[t]] = {p.ret.columns[j]: v / equity for j, v in positions.items()}
-            for j in positions:  # 시가 → 종가
-                r, g = R[t, j], Gp[t, j]
-                if not np.isnan(r):
-                    positions[j] *= (1 + r) / (1 + (0.0 if np.isnan(g) else g))
-        else:
-            for j in positions:
-                r = R[t, j]
-                if not np.isnan(r):
-                    positions[j] *= 1 + r
+        # 장중(시가 → 저가 → 종가): 손절 점검 후 종가 반영
+        for j in list(positions):
+            r, g = R[t, j], Gp[t, j]
+            if np.isnan(r):
+                continue
+            intraday = (1 + r) / (1 + (0.0 if np.isnan(g) else g))
+            if LO is not None and j in basis and basis[j] > 0:
+                v_open = positions[j]
+                ratio_open = v_open / basis[j]
+                level = 1 - stop_loss
+                if breakeven_after and peak.get(j, 1.0) >= 1 + breakeven_after:
+                    level = max(level, 1.005)
+                ratio_low = ratio_open * intraday * (LO[t, j] if np.isfinite(LO[t, j]) else 1.0)
+                if stop_mode == "close":
+                    if ratio_open * intraday <= level:
+                        pending_exit.add(j)
+                    ratio_low = np.inf
+                if ratio_low <= level:
+                    exit_ratio = min(ratio_open, level)
+                    value = basis[j] * exit_ratio
+                    slip = slip_of(t, j, value, cash + sum(positions.values())) * 1.5
+                    fee = value * (costs.commission + slip + tax)
+                    cash += value - fee
+                    paid += fee
+                    positions.pop(j)
+                    basis.pop(j)
+                    peak.pop(j, None)
+                    stops += 1
+                    continue
+            positions[j] *= intraday
+            if j in basis and basis[j] > 0:
+                peak[j] = max(peak.get(j, 1.0), positions[j] / basis[j])
         cash *= 1 + cr
         total = cash + sum(positions.values())
         eq.append(total)
         ex.append(sum(positions.values()) / total if total > 0 else 0.0)
     idx = dates[s: e + 1]
-    return SimResult(pd.Series(eq, index=idx), pd.Series(ex, index=idx), pd.Series(tv, dtype=float),
-                     holdings, paid)
+    res = SimResult(pd.Series(eq, index=idx), pd.Series(ex, index=idx), pd.Series(tv, dtype=float), holdings, paid)
+    res.holdings["_stops"] = stops
+    return res
 
 
 def costs_min(equity: float, frac: float = 0.002) -> float:

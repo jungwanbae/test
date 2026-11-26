@@ -156,3 +156,108 @@ def test_msap_combines_stock_and_etf_sleeves(tmp_path, market, monkeypatch):
     stock_w = sum(rep.targets[s] for s in stocks[:3])
     assert abs(stock_w - cfg.msap.stock_weight) < 1e-3  # 주식 슬리브 70% (리포트는 소수 4자리 반올림)
     assert abs(sum(rep.targets.values()) - 1.0) < 1e-3
+
+
+# ---------------------------------------------------------------- 주문 실패·부분체결 (외부 피드백 4번)
+def _patch_place(broker, fn):
+    orig = broker.place_order
+    broker.place_order = lambda req: fn(req, orig)
+    return broker
+
+
+def test_partial_fills_converge_without_overbuying(tmp_path, market, monkeypatch):
+    """증권사가 매번 절반만 체결해도 라운드마다 실제 잔고로 재계산 → 목표를 넘겨 사지 않는다."""
+    from autotrader.models import OrderRequest as OR
+    eng, broker, cfg = _make(tmp_path, market, monkeypatch)
+    cfg.execution.max_rounds = 6
+
+    def half(req, orig):
+        q = max(1, req.qty // 2)
+        return orig(OR(req.symbol, req.side, q, req.order_type, req.price, req.tag))
+    _patch_place(broker, half)
+    rep = eng.run_once()
+    assert rep.status in ("done", "partial")
+    acct = broker.get_account()
+    equity = acct.cash + sum(p.market_value for p in acct.positions.values())
+    for s, p in acct.positions.items():
+        assert p.market_value / equity <= rep.targets.get(s, 0) + 0.02, s   # 과매수 없음
+    assert len(rep.orders) > len(rep.targets)                               # 여러 라운드에 걸쳐 나눠 체결
+
+
+def test_rejected_symbol_reports_partial_and_others_fill(tmp_path, market, monkeypatch):
+    from autotrader.models import OrderResult
+    eng, broker, cfg = _make(tmp_path, market, monkeypatch)
+    target, _ = eng.compute_targets(datetime(2026, 11, 2).date(), broker.get_account())
+    bad = target[target > 0.05].index[0]
+
+    def reject(req, orig):
+        if req.symbol == bad:
+            return OrderResult(req, False, "", "VI 발동으로 주문 거부")
+        return orig(req)
+    _patch_place(broker, reject)
+    rep = eng.run_once()
+    assert rep.status == "partial" and "잔여" in rep.message
+    assert bad not in broker.get_account().positions
+    assert any(o["symbol"] != bad and o["accepted"] for o in rep.orders)
+    assert not eng.store.rebalanced("2026-11")   # 미완료 → 다음 실행 때 재시도
+
+
+def test_network_error_aborts_then_next_run_reconciles(tmp_path, market, monkeypatch):
+    """주문 도중 네트워크 오류 → 즉시 중단(재전송 없음). 다음 실행은 실제 잔고 기준으로 남은 것만 주문."""
+    from autotrader.brokers.base import BrokerError
+    eng, broker, cfg = _make(tmp_path, market, monkeypatch)
+    calls = {"n": 0}
+
+    def flaky(req, orig):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise BrokerError("연결 끊김", category="network")
+        return orig(req)
+    _patch_place(broker, flaky)
+    rep = eng.run_once()
+    assert rep.status == "error" and calls["n"] == 2
+    first = {s: p.qty for s, p in broker.get_account().positions.items()}
+    assert len(first) == 1                       # 오류 전 1건만 체결, 그 뒤로는 보내지 않음
+    rep2 = eng.run_once()
+    assert rep2.status == "done"
+    second = broker.get_account()
+    equity = second.cash + sum(p.market_value for p in second.positions.values())
+    for s, p in second.positions.items():
+        assert p.market_value / equity <= rep2.targets.get(s, 0) + 0.02   # 이중 매수 없음
+
+
+def test_msap_minervini_stop_sells_and_blocks_rebuy(tmp_path, market, monkeypatch):
+    import autotrader.equity.live as live
+    import autotrader.equity.panel as panel_mod
+
+    day = {"d": datetime(2026, 11, 2, 9, 31, tzinfo=KST)}
+    eng, broker, cfg = _make(tmp_path, market, monkeypatch)
+    eng.clock = lambda: day["d"]
+    cfg.strategy.name = "msap"
+    cfg.msap.stock.top_n = 3
+    cfg.msap.stock.sync = False
+    cfg.msap.stock.stop_loss = 0.15
+    stocks = ["005930", "000660", "035420", "051910"]
+    px = {s: 50_000.0 for s in stocks}
+    prev = dict(px)
+    base_quote = broker._quote_fn
+    broker._quote_fn = lambda s: (Quote(s, px[s], bid=px[s], ask=px[s], prev_close=prev[s]) if s in px else base_quote(s))
+
+    class FakePanel:
+        names = pd.Series({s: s for s in stocks})
+
+    monkeypatch.setattr(panel_mod, "build_panel", lambda *a, **k: FakePanel())
+    monkeypatch.setattr(live, "latest_rows", lambda *a, **k: pd.DataFrame({"code": stocks, "date": pd.Timestamp("2026-10-30")}))
+    monkeypatch.setattr(live, "score_rows", lambda r, p: pd.Series([4, 3, 2, 1.0], index=stocks))
+    assert eng.run_once().status == "done"
+    assert "005930" in broker.get_account().positions
+    # 다음날: 005930 전일종가가 매입가 대비 −20% → 손절
+    day["d"] = datetime(2026, 11, 3, 9, 31, tzinfo=KST)
+    px["005930"] = prev["005930"] = 40_000.0
+    rep = eng.run_once()
+    assert rep.status == "stopped" and "손절" in rep.message
+    assert "005930" not in broker.get_account().positions
+    assert eng.store.stopped("2026-11") == {"005930"}
+    # 같은 달 강제 리밸런싱에서도 재매수하지 않음(슬롯은 현금성 ETF)
+    rep2 = eng.run_once(force=True)
+    assert rep2.targets.get("005930", 0) == 0 and "005930" not in broker.get_account().positions

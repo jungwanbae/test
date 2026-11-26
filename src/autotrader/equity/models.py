@@ -30,6 +30,7 @@ class WFConfig:
     purge_days: int = 35          # 21 거래일 타깃 + 여유
     min_train_years: int = 4
     seed: int = 7
+    train_window_years: float | None = None   # None=확장 윈도(전체 과거), 숫자=최근 N년만(국면 변화 적응)
 
 
 def _folds(dates: pd.Series, cfg: WFConfig):
@@ -220,6 +221,8 @@ def walk_forward_scores(ds: pd.DataFrame, model: str, cfg: WFConfig | None = Non
     scores = pd.Series(np.nan, index=ds.index, dtype=np.float64)
     for k, (train_hi, test_lo, test_hi) in enumerate(_folds(ds["date"], cfg)):
         tr = lab[(lab["date"] < train_hi) & lab["date"].isin(keep_dates)]
+        if cfg.train_window_years:
+            tr = tr[tr["date"] >= train_hi - pd.Timedelta(days=int(365.25 * cfg.train_window_years))]
         te = ds[(ds["date"] >= test_lo) & (ds["date"] < test_hi)]
         if len(te) == 0 or tr["date"].nunique() < 50:
             continue

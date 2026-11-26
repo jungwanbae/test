@@ -70,6 +70,8 @@ class StockSleeveSettings:
     min_price: float = 1000.0
     sync: bool = True                        # 실행 시 marcap git pull
     max_signal_age_days: int = 5             # 데이터가 이보다 오래되면 주식 슬리브 중단
+    adv_cap: float = 0.10                    # 종목당 보유금액 ≤ 20일 평균 거래대금의 10% (초과분은 현금성 ETF)
+    stop_loss: float | None = 0.15           # 미너비니식 손절: 전일 종가가 매입가 대비 15% 이상 하락하면 매도(None=끔)
 
 
 @dataclass

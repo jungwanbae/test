@@ -10,6 +10,7 @@
   autotrader daemon                       매 거래일 정해진 시각에 자동 실행
   autotrader stock-data                   KRX 전종목 일별 데이터(1995~) 동기화 + 피처 데이터셋
   autotrader stock-train                  종목 알파 모델(LightGBM) 학습 → models/stock_lgbm.txt
+  autotrader sepa-scan                    미너비니 트렌드템플릿·VCP 스크리너(오늘 후보·피벗·손절가)
   autotrader ml-validate --data ...       딥러닝 오버레이 워크포워드 검증(+통과 시 모델 저장)
   autotrader status                       최근 실행 이력
 """
@@ -276,6 +277,32 @@ def cmd_stock_train(args) -> int:
     return 0
 
 
+def cmd_sepa_scan(args) -> int:
+    """미너비니 스크리너: 오늘 트렌드 템플릿 통과 종목 + VCP 셋업(내일 피벗 돌파 시 매수 후보)."""
+    import numpy as np
+    from autotrader.equity.panel import load_panel
+    from autotrader.equity.sepa import SEPAParams, compute_indicators
+    _setup_logging(None, args.verbose)
+    p = load_panel(args.data)
+    prm = SEPAParams(fail_exit_days=3, max_rs=95, max_above_ma50=0.15, market_filter="ma50_breadth")
+    ind = compute_indicators(p, prm)
+    t = len(ind.dates) - 1
+    print(f"기준일 {ind.dates[t].date()} · 시장 필터 {'통과' if ind.market_ok[t] else '미통과(신규 매수 보류)'} · "
+          f"트렌드템플릿 통과 비율 {ind.breadth[t]:.1%}")
+    idx = np.where(ind.tt[t])[0]
+    idx = sorted(idx, key=lambda j: -ind.rs[t, j])[: args.top]
+    print(f"{'코드':<7} {'종목':<16} {'RS':>4} {'셋업':>4} {'피벗(매수가)':>12} {'손절가':>10}")
+    for j in idx:
+        code = ind.codes[j]
+        scale = p.close.iloc[t, j] / ind.P[t, j]          # 수정지수 → 실제 가격
+        piv = ind.pivot[t, j] * scale
+        stop = max(piv * (1 - prm.max_stop), ind.stop_ref[t, j] * scale * 0.995)
+        print(f"{code:<7} {str(p.names.get(code, code))[:14]:<16} {ind.rs[t, j]:>4.0f} "
+              f"{'VCP' if ind.setup[t, j] else '':>4} {piv:>12,.0f} {stop:>10,.0f}")
+    print("※ 백테스트상 SEPA-K 단독 매매는 한국 거래비용 때문에 기대수익이 낮습니다(reports/minervini_report.md). 참고용.")
+    return 0
+
+
 # ---------------------------------------------------------------------- 파서
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="autotrader", description="멀티에셋 알고리즘 자동매매")
@@ -327,6 +354,11 @@ def build_parser() -> argparse.ArgumentParser:
     stt = sub.add_parser("stock-train", help="종목 알파 모델 학습")
     stt.add_argument("--data", default="data/krx")
     stt.set_defaults(func=cmd_stock_train)
+
+    ss = sub.add_parser("sepa-scan", help="미너비니 트렌드템플릿·VCP 스크리너")
+    ss.add_argument("--data", default="data/krx")
+    ss.add_argument("--top", type=int, default=30)
+    ss.set_defaults(func=cmd_sepa_scan)
 
     m = sub.add_parser("ml-validate", help="딥러닝 오버레이 워크포워드 검증")
     data_args(m)

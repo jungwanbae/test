@@ -22,7 +22,7 @@ universe:                  # ETF 리스크패리티 슬리브(원화 기준 4자
     - {symbol: "305080", name: "TIGER 미국채10년선물",   asset_class: 미국장기채}
   cash_asset: {symbol: "459580", name: "KODEX CD금리액티브(합성)", asset_class: 현금성}
 
-# ── 기본 전략: MSAP(멀티 슬리브) = 종목 알파(ML) 70% + ETF 리스크패리티 30% ──────────────
+# ── 기본 전략: MSAP-M = 종목 알파(ML) 70% + ETF 리스크패리티 30% + 미너비니식 손절 규율 ──────
 msap:
   stock_weight: 0.70         # 공격적 0.8~1.0 / 균형 0.5~0.6 (reports/strategy_report.md 의 비중별 성과표 참고)
   stock:
@@ -33,6 +33,9 @@ msap:
     universe_size: 600       # 시가총액 상위 600
     min_amount: 200000000    # 60일 평균 거래대금 2억원 이상
     max_weight: 0.10
+    adv_cap: 0.10            # 종목당 보유금액 ≤ 20일 평균 거래대금의 10% (유동성·슬리피지 통제)
+    stop_loss: 0.15          # 미너비니식 손절 규율(MSAP-M). 전일 종가 ≤ 매입가×0.85 → 매도, 그달은 재매수 안 함
+                             # null 로 끄면 수익 극대화형(전체 CAGR↑, 일별 MDD↓ 악화) — reports/msap_upgrade.md
   rp_target_vol: 0.10
   rp_vol_window_months: 12
 
