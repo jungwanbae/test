@@ -158,6 +158,44 @@ def test_msap_combines_stock_and_etf_sleeves(tmp_path, market, monkeypatch):
     assert abs(sum(rep.targets.values()) - 1.0) < 1e-3
 
 
+def test_quad_adds_high_rate_kospi_part(tmp_path, market, monkeypatch):
+    """QUAD: 국내 레그 = MSAP-M × (1−w) + 고금리 대비형 코스피 부분 × w (KOSPI 1배·2배·현금 ETF)."""
+    import autotrader.equity.live as live
+    import autotrader.equity.panel as panel_mod
+    from autotrader.config import Asset
+
+    eng, broker, cfg = _make(tmp_path, market, monkeypatch)
+    cfg.strategy.name = "msap"
+    cfg.msap.stock.top_n = 3
+    cfg.msap.stock.sync = False
+    hk = cfg.msap.hr_kospi
+    hk.weight, hk.kospi, hk.leveraged, hk.cash = 1 / 6, "GOLD", "EQ_TECH", "CASH"   # 상승 추세 자산을 '코스피'로
+    hk.us_rate = 0.02                                                                 # 저금리 → 최대 2배 허용
+    cfg.universe.risk_assets = [a for a in cfg.universe.risk_assets if a.symbol != "EQ_TECH"]
+    cfg.universe.extra_assets = [Asset("EQ_TECH", "레버리지")]
+    eng.names = {s: s for s in cfg.universe.all_symbols()}
+    stocks = ["005930", "000660", "035420"]
+    prices = {s: 50_000.0 for s in stocks}
+    base_quote = broker._quote_fn
+    broker._quote_fn = lambda s: (Quote(s, prices[s], bid=prices[s], ask=prices[s]) if s in prices else base_quote(s))
+
+    class FakePanel:
+        names = pd.Series({s: s for s in stocks})
+
+    monkeypatch.setattr(panel_mod, "build_panel", lambda *a, **k: FakePanel())
+    monkeypatch.setattr(live, "latest_rows", lambda *a, **k: pd.DataFrame({"code": stocks, "date": pd.Timestamp("2026-10-30")}))
+    monkeypatch.setattr(live, "score_rows", lambda r, p: pd.Series([3, 2, 1.0], index=stocks))
+    w, diag = eng.compute_targets(pd.Timestamp("2026-11-02").date())
+    assert abs(sum(w[s] for s in stocks) - 0.7 * 5 / 6) < 1e-6                     # 주식 슬리브 70% × (1 − 1/6)
+    assert abs(w.sum() - 1.0) < 1e-6
+    h = diag["hr_kospi"]
+    assert h["exposure"] == 2.0 and abs(w["EQ_TECH"] - 1 / 6) < 1e-6              # 강한 상승 추세 → 2배 ETF 100%
+    hk.us_rate = 0.045                                                                # 고금리 → 최대 1배
+    eng._cached = None
+    w2, d2 = eng.compute_targets(pd.Timestamp("2026-11-02").date())
+    assert d2["hr_kospi"]["exposure"] == 1.0 and w2.get("EQ_TECH", 0) == 0
+
+
 # ---------------------------------------------------------------- 주문 실패·부분체결 (외부 피드백 4번)
 def _patch_place(broker, fn):
     orig = broker.place_order

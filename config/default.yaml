@@ -21,8 +21,12 @@ universe:                  # ETF 리스크패리티 슬리브(원화 기준 4자
     - {symbol: "411060", name: "ACE KRX금현물",          asset_class: 금}
     - {symbol: "305080", name: "TIGER 미국채10년선물",   asset_class: 미국장기채}
   cash_asset: {symbol: "459580", name: "KODEX CD금리액티브(합성)", asset_class: 현금성}
+  extra_assets:            # 리스크패리티 밖에서 쓰는 ETF — QUAD 의 '고금리 대비형' 코스피 부분(2배)
+    - {symbol: "122630", name: "KODEX 레버리지", asset_class: 한국주식(2배)}
 
-# ── 기본 전략: MSAP-M = 종목 알파(ML) 70% + ETF 리스크패리티 30% + 미너비니식 손절 규율 ──────
+# ── 국내 레그: MSAP-M = 종목 알파(ML) 70% + ETF 리스크패리티 30% + 미너비니식 손절 규율 ──────
+#    + QUAD(1순위)의 '고금리 대비형' 코스피 부분(hr_kospi). 미국 레그는 config/triad_us.yaml
+#    전체 자본 배분(QUAD): 국내 30% = MSAP-M 25 + 고금리 대비형 코스피 5  /  미국 70% → autotrader triad 로 점검
 msap:
   stock_weight: 0.70         # 공격적 0.8~1.0 / 균형 0.5~0.6 (reports/strategy_report.md 의 비중별 성과표 참고)
   stock:
@@ -38,6 +42,12 @@ msap:
                              # null 로 끄면 수익 극대화형(전체 CAGR↑, 일별 MDD↓ 악화) — reports/msap_upgrade.md
   rp_target_vol: 0.10
   rp_vol_window_months: 12
+  hr_kospi:                # QUAD: 고금리 대비형 코스피 부분 — 추세 점수 단계로 0~2배(고금리면 최대 1배)
+    weight: 0.1667         # 국내 레그 안 비중(= 전체의 5%). 0 이면 끔(TRIAD 표준이면 0)
+    kospi: "069500"        # KODEX 200 (신호·1배)
+    leveraged: "122630"    # KODEX 레버리지 (2배)
+    cash: "459580"
+    us_rate: 0.040         # 미국 T-bill(연). 3.5% 이상이면 고금리 상한. 연준 금리가 바뀌면 갱신
 
 strategy:                  # name: msap(기본) | amr(ETF 모멘텀 전략만 단독 사용)
   name: msap

@@ -60,6 +60,7 @@ def main():
     C = pd.DataFrame({"K7": K7, "K": K, "V": V, "V2": V2, "R": LRP, "HR": HR, "A3": A3, "AQ": AQ})
     third = 1 / 3
     specs = {  # (가중치, 해외 비중)
+        "★ QUAD 4등분 (한국¼·역발상¼·레버리지RP¼·고금리 대비형¼)": ({"K": .25, "V": .25, "R": .25, "HR": .25}, 0.7),
         "TRIAD 표준 — 기존 계산(종목 모델 시드 1개)": ({"K7": third, "V": third, "R": third}, 2 / 3),
         "① TRIAD 표준 (한국⅓·확인형 역발상⅓·레버리지RP⅓)": ({"K": third, "V": third, "R": third}, 2 / 3),
         "② TRIAD 안정형 (부스트 2배)": ({"K": third, "V2": third, "R": third}, 2 / 3),

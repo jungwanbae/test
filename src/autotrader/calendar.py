@@ -47,6 +47,10 @@ class KRXCalendar:
             d += timedelta(days=1)
         return d
 
+    def is_month_end(self, d: date) -> bool:
+        """d 가 그달의 마지막 거래일인가(월말 신호 생성일)."""
+        return self.is_trading_day(d) and self.next_trading_day(d).month != d.month
+
 
 class USCalendar(KRXCalendar):
     """NYSE 거래일(미국 동부 날짜 기준). holidays 패키지의 NYSE 휴장일 + extra_holidays."""
@@ -61,7 +65,3 @@ class USCalendar(KRXCalendar):
             if v is not None:
                 return v
         return not (d.weekday() >= 5 or d in self._extra or d in self._kr)
-
-    def is_month_end(self, d: date) -> bool:
-        """d 가 그달의 마지막 거래일인가(월말 신호 생성일)."""
-        return self.is_trading_day(d) and self.next_trading_day(d).month != d.month

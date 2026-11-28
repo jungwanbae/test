@@ -137,6 +137,12 @@ def test_us_leg_targets_shape_and_crash_boost():
     w = us_leg_targets(px, cfg.triad_us, cal.is_month_end, d)
     assert set(w.index) == set(cfg.triad_us.tickers.values()) and w.sum() <= 1 + 1e-9 and (w >= 0).all()
     assert d["triad_us"]["vt_row"] <= d["triad_us"]["signal_date"]
+    # QUAD: 고금리 대비형 미국 부분이 들어가고(합 = hr_weight), 금리 4% ≥ 3.5% 라 나스닥 2배·금 1배 상한
+    assert d["triad_us"]["hr_weights"] and d["triad_us"]["high_rate_cap"]
+    assert "GLDx2" not in d["triad_us"]["hr_weights"]                                # 고금리 상한: 금 최대 1배
+    from dataclasses import replace
+    w0 = us_leg_targets(px, replace(cfg.triad_us, hr_weight=0.0), cal.is_month_end)   # TRIAD 표준
+    assert (w0 - w).abs().max() > 0.01
     # 폭락 → 골든크로스 회복 구간이면 VT 슬리브 노출이 3배로
     px2 = _us_market(crash_at=252 * 7 - 330)
     d2: dict = {}

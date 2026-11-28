@@ -23,21 +23,26 @@ class Asset:
 class UniverseConfig:
     risk_assets: list[Asset] = field(default_factory=list)
     cash_asset: Asset | None = None
+    extra_assets: list[Asset] = field(default_factory=list)   # 리스크패리티 밖에서 쓰는 ETF(예: 고금리 대비형의 레버리지 ETF)
+
+    def _assets(self) -> list[Asset]:
+        return self.risk_assets + ([self.cash_asset] if self.cash_asset else []) + self.extra_assets
 
     def all_symbols(self) -> list[str]:
         s = [a.symbol for a in self.risk_assets]
         if self.cash_asset:
             s.append(self.cash_asset.symbol)
+        s += [a.symbol for a in self.extra_assets if a.symbol not in s]
         return s
 
     def kind_of(self, symbol: str) -> str:
-        for a in self.risk_assets + ([self.cash_asset] if self.cash_asset else []):
+        for a in self._assets():
             if a.symbol == symbol:
                 return a.kind
         return "stock"  # 유니버스(ETF) 밖 종목 = 종목 알파 슬리브의 개별주식
 
     def name_of(self, symbol: str) -> str:
-        for a in self.risk_assets + ([self.cash_asset] if self.cash_asset else []):
+        for a in self._assets():
             if a.symbol == symbol:
                 return a.name or symbol
         return symbol
@@ -75,12 +80,23 @@ class StockSleeveSettings:
 
 
 @dataclass
+class HRKospiSettings:
+    """QUAD 의 '고금리 대비형' 코스피 부분(국내 계좌). 추세 점수 단계로 KODEX 200·레버리지·현금 비중을 정한다."""
+    weight: float = 0.0                      # 국내 레그 안 비중(QUAD 기본 1/6 = 전체의 5%). 0 이면 끔
+    kospi: str = "069500"                    # KODEX 200 (신호·1배)
+    leveraged: str = "122630"                # KODEX 레버리지 (2배)
+    cash: str = "459580"                     # 현금성 ETF
+    us_rate: float = 0.040                   # 미국 T-bill(연). ≥ 3.5% 이면 코스피 최대 1배(고금리 규칙). 연준 금리 변화 시 갱신
+
+
+@dataclass
 class MSAPSettings:
     stock_weight: float = 0.70               # 종목 알파 슬리브 비중(나머지 = ETF 리스크패리티)
     stock: StockSleeveSettings = field(default_factory=StockSleeveSettings)
     rp_target_vol: float = 0.10
     rp_vol_window_months: float = 12
     rp_max_leverage: float = 1.0
+    hr_kospi: HRKospiSettings = field(default_factory=HRKospiSettings)
 
 
 @dataclass
@@ -92,7 +108,8 @@ class TriadUSSettings:
     distribution_yield: 증권사 일봉은 분배금 미반영 가격이라, 추세(12개월 수익 > 현금) 판정용으로 연 분배율을
                         매끈하게 더해 총수익을 근사한다.
     """
-    vt_weight: float = 0.5                 # 미국 레그 안에서 확인형 역발상 VT 비중(나머지 = 레버리지 RP)
+    hr_weight: float = 0.0                 # 미국 레그 안 '고금리 대비형' 미국 부분 비중(QUAD 기본 2/7). 0 이면 TRIAD
+    vt_weight: float = 0.5                 # 나머지 중 확인형 역발상 VT 비중(그 나머지 = 레버리지 RP)
     vt_target: float = 0.25                # 나스닥 목표변동성(연)
     crash: float = -0.30                   # '깊은 낙폭' 기준: 최근 2년 안에 사상 최고가 대비 −30% 이하였던 적
     boost_leverage: float = 3.0            # 폭락 후 골든크로스(50>200일선) 확인 시 노출

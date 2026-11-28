@@ -161,7 +161,9 @@ class TradingEngine:
         if self.cfg.risk.capital_limit:
             equity = min(equity, self.cfg.risk.capital_limit)
         adv20 = self._adv20(panel, list(stock_w.index), sig_date)
-        stock_w, cut = liquidity_cap(stock_w, adv20, equity * mcfg.stock_weight, ms.stock.adv_cap)
+        hk = ms.hr_kospi
+        stock_capital = equity * mcfg.stock_weight * (1 - hk.weight)
+        stock_w, cut = liquidity_cap(stock_w, adv20, stock_capital, ms.stock.adv_cap)
         if cut:
             diag["liquidity_cut"] = cut
             log.warning("유동성 한도로 비중 축소: %s", cut)
@@ -170,6 +172,13 @@ class TradingEngine:
         leftover = mcfg.stock_weight * (1.0 - float(stock_w.sum()))
         if leftover > 1e-9 and cash:
             target[cash] = target.get(cash, 0.0) + leftover
+        if hk.weight > 0:   # QUAD: 고금리 대비형 코스피 부분(KODEX 200·레버리지·현금, 백테스트와 같은 함수)
+            from autotrader.strategy.triad import hr_kospi_targets
+            if hk.kospi not in closes.columns:
+                raise RuntimeError(f"고금리 대비형 코스피 신호용 일봉 없음: {hk.kospi}")
+            sym = {"K200": hk.kospi, "K200x2": hk.leveraged, "CASH_KRW": hk.cash}
+            hw = hr_kospi_targets(closes[hk.kospi], sym, hk.us_rate, self.calendar.is_month_end, diag)
+            target = (target * (1 - hk.weight)).add(hw * hk.weight, fill_value=0.0)
         diag.update({"signal_date": str(sig_date.date()), "stocks": list(stock_w.index),
                      "stock_scores": scores.loc[stock_w.index].round(4).to_dict()})
         return target, diag

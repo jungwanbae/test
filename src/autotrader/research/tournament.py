@@ -349,37 +349,56 @@ def vix_spike(base="SPY", on=35, off=20, L=2):
 
 
 # ---------------------------------------------------------------------- F. 사용자 기존 전략(근사 재현)
-def hr_replica(c: Ctx):
-    """'고금리 대비형' 근사: 나스닥 50%(GC 30 + VT 20), 금 30%(200일선), 코스피 20%(추세 점수 단계),
-    T-bill ≥ 3.5% 이면 나스닥 최대 2배·금·코스피 최대 1배. (7팩터 틸트는 단순화)"""
-    q, g, k = c.P["QQQ"], c.P["GLD"], c.P["K200"]
+HR_RATE_CAP = 0.035   # 고금리 대비형: 미국 T-bill ≥ 3.5% 이면 레버리지 상한 축소
+
+
+def _add(w: dict, dct: dict, s: float) -> None:
+    for kk, vv in dct.items():
+        w[kk] = w.get(kk, 0) + vv * s
+
+
+def hr_us_part(c: Ctx) -> pd.DataFrame:
+    """고금리 대비형의 미국 부분(전체의 80%)을 1로 정규화: 나스닥 GC 37.5% + 나스닥 VT 25% + 금 37.5%."""
+    q, g = c.P["QQQ"], c.P["GLD"]
     q50, q200, g200 = q.rolling(50).mean(), q.rolling(200).mean(), g.rolling(200).mean()
     qvol = q.pct_change().rolling(21).std() * np.sqrt(252)
+    rows = {}
+    for d in c.me:
+        if not np.isfinite(q200.loc[d]) or not np.isfinite(g200.loc[d]):
+            continue
+        capq, capo = (2, 1) if c.rf_us.loc[d] >= HR_RATE_CAP else (3, 2)
+        w: dict = {}
+        _add(w, lev_mix("QQQ", min(3 if q50.loc[d] > q200.loc[d] else 0, capq), "CASH_USD", 3), 0.30 / 0.8)
+        _add(w, lev_mix("QQQ", min(3 * min(1.0, 0.5 / (3 * qvol.loc[d])), capq), "CASH_USD", 3), 0.20 / 0.8)
+        _add(w, lev_mix("GLD", min(2 if g.loc[d] > g200.loc[d] else 0, capo), "CASH_USD", 2), 0.30 / 0.8)
+        rows[d] = w
+    return pd.DataFrame(rows).T
+
+
+def hr_kr_part(c: Ctx) -> pd.DataFrame:
+    """고금리 대비형의 코스피 부분(전체의 20%)을 1로 정규화: 추세 점수 단계(0~2배), 고금리면 최대 1배."""
+    k = c.P["K200"]
     k200, k50 = k.rolling(200).mean(), k.rolling(50).mean()
     rows = {}
     for d in c.me:
-        if not np.isfinite(q200.loc[d]) or not np.isfinite(k200.loc[d]) or not np.isfinite(g200.loc[d]):
+        if not np.isfinite(k200.loc[d]):
             continue
-        cap = c.rf_us.loc[d] >= 0.035
-        capq, capo = (2, 1) if cap else (3, 2)
-        w = {}
-
-        def add(dct, s):
-            for kk, vv in dct.items():
-                w[kk] = w.get(kk, 0) + vv * s
-        Lgc = min(3 if q50.loc[d] > q200.loc[d] else 0, capq)
-        add(lev_mix("QQQ", Lgc, "CASH_USD", 3), 0.30)
-        Lvt = min(3 * min(1.0, 0.5 / (3 * qvol.loc[d])), capq)
-        add(lev_mix("QQQ", Lvt, "CASH_USD", 3), 0.20)
-        Lg = min(2 if g.loc[d] > g200.loc[d] else 0, capo)
-        add(lev_mix("GLD", Lg, "CASH_USD", 2), 0.30)
+        capo = 1 if c.rf_us.loc[d] >= HR_RATE_CAP else 2
         score = (0.5 * np.sign(k.loc[d] / k200.loc[d] - 1) + 0.3 * np.sign(k50.loc[d] / k200.loc[d] - 1)
                  + 0.2 * np.sign(ret_n(c.P[["K200"]], d, 252)["K200"]))
         Lk = 2.0 if score >= 0.5 else 1.5 if score >= 0.2 else 1.0 if score >= -0.2 else 0.5 if score >= -0.5 else 0.0
         Lk = min(Lk, capo)
-        add({"K200x2": Lk - 1, "K200": 2 - Lk} if Lk >= 1 else {"K200": Lk, "CASH_KRW": 1 - Lk}, 0.20)
-        rows[d] = w
+        rows[d] = {"K200x2": Lk - 1, "K200": 2 - Lk} if Lk >= 1 else {"K200": Lk, "CASH_KRW": 1 - Lk}
     return pd.DataFrame(rows).T
+
+
+def hr_replica(c: Ctx):
+    """'고금리 대비형' 근사: 나스닥 50%(GC 30 + VT 20), 금 30%(200일선), 코스피 20%(추세 점수 단계),
+    T-bill ≥ 3.5% 이면 나스닥 최대 2배·금·코스피 최대 1배. (7팩터 틸트는 단순화)
+    실전에서는 미국 부분(hr_us_part)은 해외 계좌, 코스피 부분(hr_kr_part)은 국내 계좌에서 운용한다."""
+    us, kr = hr_us_part(c).fillna(0.0), hr_kr_part(c).fillna(0.0)
+    idx = us.index.intersection(kr.index)
+    return (us.loc[idx] * 0.8).join(kr.loc[idx] * 0.2, how="outer")
 
 
 def aggressive3_replica(c: Ctx):

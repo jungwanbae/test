@@ -193,6 +193,11 @@ def cmd_signal(args) -> int:
         t = diag["triad_us"]
         print(f"  나스닥 21일 변동성 {t['qqq_vol21']:.1%} · 2년 최대낙폭 {t['qqq_dd_2y']:.1%} · 골든크로스 {t['golden_cross']} "
               f"· VT 노출 {t['vt_exposure']:.2f}배{' (폭락 후 회복 부스트)' if t['boost_on'] else ''}")
+        if t.get("hr_weights"):
+            print(f"  고금리 대비형(미국 부분): {t['hr_weights']}{' · 고금리 상한 적용' if t['high_rate_cap'] else ''}")
+    if "hr_kospi" in diag:
+        h = diag["hr_kospi"]
+        print(f"  고금리 대비형(코스피 부분): 노출 {h['exposure']:.1f}배 {h['weights']}{' · 고금리 상한 적용' if h['high_rate_cap'] else ''}")
     for s, v in w.sort_values(ascending=False).items():
         nm = eng.names.get(s, cfg.universe.name_of(s))
         print(f"  {s} {nm:<24} {v * 100:6.2f}%")
@@ -217,7 +222,7 @@ def cmd_daemon(args) -> int:
 
 
 def cmd_triad(args) -> int:
-    """TRIAD 레그 간 자본 배분 점검: 국내 레그(원화) vs 미국 레그(달러×환율) → 목표 비율과 환전 권고액."""
+    """QUAD/TRIAD 레그 간 자본 배분 점검: 국내 레그(원화) vs 미국 레그(달러×환율) → 목표 비율과 환전 권고액."""
     from autotrader.brokers import build_broker
     from autotrader.config import load_config
     kr_cfg, us_cfg = load_config(args.kr_config), load_config(args.us_config)
@@ -236,7 +241,7 @@ def cmd_triad(args) -> int:
     us_val = us_usd * fx
     tot = kr_val + us_val
     share = kr_val / tot if tot else 0.0
-    print(f"국내 레그(MSAP-M) {kr_val:,.0f}원 · 미국 레그(VT+RP) ${us_usd:,.0f} × {fx:,.1f} = {us_val:,.0f}원")
+    print(f"국내 레그 {kr_val:,.0f}원 · 미국 레그 ${us_usd:,.0f} × {fx:,.1f} = {us_val:,.0f}원")
     print(f"현재 국내 비중 {share:.1%} / 목표 {args.kr_share:.1%} (허용 ±{args.band:.0%}p)")
     gap = (share - args.kr_share) * tot
     if abs(share - args.kr_share) > args.band:
@@ -384,10 +389,11 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--dry-run", action="store_true")
     d.set_defaults(func=cmd_daemon)
 
-    t = sub.add_parser("triad", help="TRIAD 국내·미국 레그 자본 배분 점검")
+    t = sub.add_parser("triad", help="QUAD/TRIAD 국내·미국 레그 자본 배분 점검")
     t.add_argument("--kr-config", default="config/default.yaml")
     t.add_argument("--us-config", default="config/triad_us.yaml")
-    t.add_argument("--kr-share", type=float, default=1 / 3)
+    t.add_argument("--kr-share", type=float, default=0.30,
+                   help="국내 레그 목표 비중(QUAD 0.30 = MSAP-M 25%+고금리 대비형 코스피 5%, TRIAD 표준 0.333)")
     t.add_argument("--band", type=float, default=0.10)
     t.set_defaults(func=cmd_triad)
 
