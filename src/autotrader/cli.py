@@ -235,6 +235,13 @@ def cmd_triad(args) -> int:
     us_syms = set(us_cfg.universe.all_symbols())
     us_usd = ua.cash + sum(p.market_value for s, p in ua.positions.items() if s in us_syms)
     fx = ub.fx_rate() if hasattr(ub, "fx_rate") else None
+    if not fx:  # 페이퍼 모드 등: 환율만 NH 해외 시세로 조회
+        try:
+            from autotrader.brokers import _nh
+            fx = _nh(us_cfg, "mock").fx_rate()
+        except Exception as e:  # noqa: BLE001
+            log_fx = f"({e})"
+            print(f"환율 조회 실패 {log_fx}")
     if not fx:
         print("환율을 가져오지 못했습니다(시세는 운영 키 필요)")
         return 1
@@ -424,8 +431,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from autotrader.brokers.base import BrokerError
     args = build_parser().parse_args(argv)
-    return int(args.func(args) or 0)
+    try:
+        return int(args.func(args) or 0)
+    except BrokerError as e:   # 설정·인증·네트워크 오류는 트레이스백 대신 한 줄로(-v 로 상세)
+        if args.verbose:
+            raise
+        print(f"오류: {e}")
+        return 2
 
 
 if __name__ == "__main__":  # pragma: no cover

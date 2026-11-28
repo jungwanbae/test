@@ -12,10 +12,14 @@
 market: US
 
 broker:
-  name: nh_plug
+  name: nh_plug            # nh_plug(NH 해외주식 모의/실전) | paper(실시세로 받고 체결은 로컬에서 가상 처리)
   env: mock                # 모의투자에서 충분히 검증 후 live
   nh_brand: namuh
   nh_rate_limit_per_sec: 4
+  # name: paper 일 때 쓰는 값 — 국내 레그와 상태 파일이 겹치지 않게 분리, 초기 자금은 달러
+  paper_initial_cash: 50000
+  paper_state_file: state/paper_us.json
+  paper_quote_source: nh_plug
 
 universe:
   risk_assets:

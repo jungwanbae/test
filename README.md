@@ -28,6 +28,7 @@
 - 상세·근거: [`reports/tournament_report.md`](reports/tournament_report.md) · [`reports/adaptive_report.md`](reports/adaptive_report.md)
   (조합 최적화·현금 활용·시대 적응형 딥러닝 검증) · `reports/hr_mix.csv`(고금리 대비형 결합 방식 비교) · `reports/triad_variants.csv`
 - ⚠️ 2026-11-24 현재 TRIAD 계열은 고점 대비 약 −22% 낙폭 중입니다. 과거 최대낙폭을 넘을 수 있다는 전제로 비중을 정하세요.
+- **모의투자 시작하기: [`docs/mock_trading_guide.md`](docs/mock_trading_guide.md)** (설치 → 연결 확인 → 신호 → 드라이런 → 모의 주문 → 자동 실행)
 - 종목 모델은 **시드 3개 앙상블**(같은 설정이라도 난수에 따라 CAGR 17~20% 로 흔들려, 세 모델의 순위를 평균)입니다.
 
 ### 추천 순위 (같은 엔진·같은 계산법, 2001.02~2026.11, `reports/triad_variants.csv`)
